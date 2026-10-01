@@ -101,6 +101,23 @@ static bool startNextConfiguredModem() {
   return false;
 }
 
+static String enabledPhoneSummary() {
+  String summary;
+  int enabledCount = 0;
+  for (ModemId modemId = 0; modemId < MODEM_COUNT; modemId++) {
+    if (!config.modems[modemId].enabled) continue;
+
+    if (enabledCount > 0) summary += ", ";
+    summary += "SIM";
+    summary += String(modemId + 1);
+    summary += "=";
+    String number = Sim::phoneNum(modemId);
+    summary += number.length() > 0 ? number : "未知";
+    enabledCount++;
+  }
+  return enabledCount > 0 ? summary : "无启用SIM";
+}
+
 static void serviceModemStartup() {
   if (config.atBridgeEnabled) return;
 
@@ -217,10 +234,11 @@ void loop() {
     static unsigned long lastUrlPrint = 0;
     if (millis() - lastUrlPrint >= 3000) {
       lastUrlPrint = millis();
+      String phoneSummary = enabledPhoneSummary();
       if (WifiManager::mode() == WIFI_MODE_AP_ACTIVE) {
-        LOG("MAIN", "⚠️ 当前号码: %s，请访问 %s 配置WiFi，或通过 BluFi BLE 配网（设备名: %s）", Sim::phoneNum().c_str(), WifiManager::deviceUrl().c_str(), WifiManager::deviceName().c_str());
+        LOG("MAIN", "启用SIM本机号码: %s；请访问 %s 配置WiFi，或通过 BluFi BLE 配网（设备名: %s）", phoneSummary.c_str(), WifiManager::deviceUrl().c_str(), WifiManager::deviceName().c_str());
       } else {
-        LOG("MAIN", "⚠️ 当前号码: %s，请访问 %s 进行配置", Sim::phoneNum().c_str(), WifiManager::deviceUrl().c_str());
+        LOG("MAIN", "启用SIM本机号码: %s；请访问 %s 进行配置", phoneSummary.c_str(), WifiManager::deviceUrl().c_str());
       }
     }
   }

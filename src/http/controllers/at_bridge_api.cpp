@@ -277,15 +277,16 @@ void atBridgeExchangeController(AsyncWebServerRequest* request, uint8_t* data,
   }
 
   renewSession();
-  // 提示符交互必须裸写 Serial1：dispatcher 的命令槽只认「命令 → 终止状态」，
+  HardwareSerial& serial = SimDispatcher::serial(MODEM_PRIMARY);
+  // 提示符交互必须裸写主模组 UART：dispatcher 的命令槽只认「命令 → 终止状态」，
   // 表达不了中途的 '>'。因此独占 reader，失败即视为「未发出」。
   if (!SimDispatcher::pauseReader()) {
     free(payload);
     JsonResp::err(request, 412, "SIM 串口忙，载荷未发出");
     return;
   }
-  while (Serial1.available()) Serial1.read();
-  Serial1.println(command);
+  while (serial.available()) serial.read();
+  serial.println(command);
 
   // 按行读取而不是按字节累积:reader 正停着,期间到达的 RING / +CLIP / +CMTI 必须
   // 转交给 URC 路由,否则会被当成响应字节吞掉。出站短信最长占用 30s,不转交就意味着
@@ -295,12 +296,12 @@ void atBridgeExchangeController(AsyncWebServerRequest* request, uint8_t* data,
   String lineBuf;
   while (millis() - start < BRIDGE_PROMPT_TIMEOUT_MS) {
     esp_task_wdt_reset();
-    if (!Serial1.available()) {
+    if (!serial.available()) {
       // 让出 CPU：本回调运行在 async_tcp 任务上下文，纯自旋会触发该任务看门狗。
       delay(5);
       continue;
     }
-    char c = Serial1.read();
+    char c = serial.read();
     // 提示符不带换行,必须在成行之前就识别。
     if (c == '>') { gotPrompt = true; break; }
     if (c == '\r') continue;
@@ -325,7 +326,7 @@ void atBridgeExchangeController(AsyncWebServerRequest* request, uint8_t* data,
     return;
   }
 
-  Serial1.write(payload, payloadLen);
+  serial.write(payload, payloadLen);
   free(payload);
 
   // 载荷已出。从这里开始任何失败都是「结果不确定」，绝不能回 412。
@@ -335,8 +336,8 @@ void atBridgeExchangeController(AsyncWebServerRequest* request, uint8_t* data,
   lineBuf = "";
   while (millis() - start < timeoutMs) {
     esp_task_wdt_reset();
-    if (!Serial1.available()) { delay(5); continue; }
-    char c = Serial1.read();
+    if (!serial.available()) { delay(5); continue; }
+    char c = serial.read();
     if (c == '\r') continue;
     if (c != '\n') {
       lineBuf += c;

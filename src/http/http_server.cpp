@@ -39,6 +39,23 @@ void HttpServer::refreshAuthCredentials() {
   LOG("HTTP", "认证凭证已更新");
 }
 
+static void sendStaticHtml(AsyncWebServerRequest* request,
+                           const char* compressedPath,
+                           const char* plainPath) {
+  bool compressed = LittleFS.exists(compressedPath);
+  const char* path = compressed ? compressedPath : plainPath;
+  AsyncWebServerResponse* response = request->beginResponse(LittleFS, path, "text/html");
+  if (response == nullptr) {
+    LOG("HTTP", "静态页面不存在: %s 或 %s", compressedPath, plainPath);
+    request->send(500, "text/plain; charset=utf-8", "静态页面文件不存在");
+    return;
+  }
+  if (compressed) {
+    response->addHeader("Content-Encoding", "gzip");
+  }
+  request->send(response);
+}
+
 void HttpServer::setup(AsyncWebServer& server) {
   g_authMiddleware.setUsername(config.webUser.c_str());
   g_authMiddleware.setPassword(config.webPass.c_str());
@@ -145,14 +162,10 @@ void HttpServer::setup(AsyncWebServer& server) {
 
   // Static pages — served from LittleFS as gzip, browser decompresses automatically
   server.on("/tools", HTTP_GET, [](AsyncWebServerRequest* request) {
-    AsyncWebServerResponse* resp = request->beginResponse(LittleFS, "/tools.html.gz", "text/html");
-    resp->addHeader("Content-Encoding", "gzip");
-    request->send(resp);
+    sendStaticHtml(request, "/tools.html.gz", "/tools.html");
   });
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-    AsyncWebServerResponse* resp = request->beginResponse(LittleFS, "/index.html.gz", "text/html");
-    resp->addHeader("Content-Encoding", "gzip");
-    request->send(resp);
+    sendStaticHtml(request, "/index.html.gz", "/index.html");
   });
 
   // All unmatched routes → 404 (no LittleFS lookup, no VFS error logs)

@@ -127,14 +127,18 @@ static void setupSTAMode() {
 static void enterAPMode() {
   WiFi.mode(WIFI_AP);
   applyWifiTxPower();
-  WiFi.softAP(kApSsid);
+  bool apStarted = WiFi.softAP(kApSsid);
+  if (!apStarted) {
+    LOG("WIFI", "AP模式启动失败：WiFi.softAP返回false");
+  }
   // AP 模式下必须启用 Modem Sleep，否则 WiFi 持续占用射频，BLE 无法发送广播包
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
   s_mode           = WIFI_MODE_AP_ACTIVE;
   s_initDone       = true;
   s_reconnState    = RECONNECT_IDLE;       // 清除可能残留的扫描等待状态
   s_apRescanNextMs = millis() + WIFI_AP_RESCAN_INTERVAL_MS;  // 30s 后首次后台扫描
-  LOG("WIFI", "AP模式启动，SSID: %s，IP: 192.168.4.1", kApSsid);
+  LOG("WIFI", "AP模式%s，SSID: %s，IP: 192.168.4.1",
+      apStarted ? "启动" : "请求已发出但未确认成功", kApSsid);
   Blufi::init();
 }
 
