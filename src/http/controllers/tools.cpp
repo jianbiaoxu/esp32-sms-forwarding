@@ -6,6 +6,8 @@
 #include "../../logger/logger.h"
 #include "coredump/coredump.h"
 #include "sms/sms.h"
+#include "push/push.h"
+#include "time/time_sync.h"
 #include "sim/sim_dispatcher.h"
 #include "wifi/wifi_manager.h"
 #include <ArduinoJson.h>
@@ -28,9 +30,19 @@ static constexpr unsigned long AT_TOOL_TIMEOUT_MAX_MS     = 180000;
 
 // ── shared helpers ──────────────────────────────────────────────────
 // sendATCommand: 通过 SimCommandDispatcher 串行发送 AT 指令并返回响应字符串
-static String sendATCommand(const char* cmd, unsigned long timeoutMs) {
+static ModemId requestModemId(AsyncWebServerRequest* request) {
+  int id = 0;
+  if (request->hasParam("modem", true)) {
+    id = request->getParam("modem", true)->value().toInt();
+  } else if (request->hasParam("modem")) {
+    id = request->getParam("modem")->value().toInt();
+  }
+  return (id >= 0 && id < MODEM_COUNT) ? (ModemId)id : MODEM_PRIMARY;
+}
+
+static String sendATCommand(ModemId modemId, const char* cmd, unsigned long timeoutMs) {
   String resp;
-  SimDispatcher::sendCommand(cmd, static_cast<uint32_t>(timeoutMs), &resp, false);
+  SimDispatcher::sendCommand(modemId, cmd, static_cast<uint32_t>(timeoutMs), &resp, false);
   return resp;
 }
 
@@ -48,6 +60,7 @@ static void sendJsonResponse(AsyncWebServerRequest* request, bool success, const
 // ---------- handlers ----------
 
 void sendSmsController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
   String phone   = request->hasParam("phone",   true) ? request->getParam("phone",   true)->value() : "";
   String content = request->hasParam("content", true) ? request->getParam("content", true)->value() : "";
   phone.trim(); content.trim();
@@ -57,27 +70,39 @@ void sendSmsController(AsyncWebServerRequest* request) {
 
   LOG("HTOOLS", "网页端发送短信请求，目标: %s", phone.c_str());
 
-  bool success = Sms::sendPDU(phone.c_str(), content.c_str());
+  bool success = Sms::sendPDU(modemId, phone.c_str(), content.c_str());
 
   sendJsonResponse(request, success, success ? "短信发送成功！" : "短信发送失败，请检查模组状态");
 }
 
+void testPushController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
+  String modemName = config.modems[modemId].name.length() > 0
+                   ? config.modems[modemId].name : ("SIM" + String(modemId + 1));
+  String message = "这是一条工具箱测试推送消息。\n来源模组: " + modemName
+                 + "\n测试时间: " + TimeSync::dateStr();
+  Push::send("[工具箱测试]", message, TimeSync::dateStr(), MsgTypeInfo(MSG_TYPE_SIM), modemId);
+  sendJsonResponse(request, true, "测试推送已入队，稍后将按当前共享通道配置发送");
+}
+
 void pingController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
+  HardwareSerial& serial = SimDispatcher::serial(modemId);
   // Ping 会 pauseReader() 独占 UART 并裸写 Serial1，必然打断桥会话。
   if (atBridgeSessionActive()) { sendJsonResponse(request, false, "远程 AT 会话进行中，请稍后重试"); return; }
   LOG("HTOOLS", "网页端发起Ping请求");
 
-  sendATCommand("AT+CGACT=1,1", 10000);
+  sendATCommand(modemId, "AT+CGACT=1,1", 10000);
   delay(500);
 
   // AT+MPING 为异步多行响应，通过 Serial1 直接收取（reader task 此时已阻塞在调用方等待）
-  if (!SimDispatcher::pauseReader()) {
-    sendATCommand("AT+CGACT=0,1", 5000);
+  if (!SimDispatcher::pauseReader(modemId)) {
+    sendATCommand(modemId, "AT+CGACT=0,1", 5000);
     sendJsonResponse(request, false, "SIM 串口忙，请稍后重试");
     return;
   }
-  while (Serial1.available()) Serial1.read();
-  Serial1.println("AT+MPING=\"8.8.8.8\",30,1");
+  while (serial.available()) serial.read();
+  serial.println("AT+MPING=\"8.8.8.8\",30,1");
 
   unsigned long start = millis();
   String resp;
@@ -85,8 +110,8 @@ void pingController(AsyncWebServerRequest* request) {
   String pingResultMsg;
 
   while (millis() - start < 35000) {
-    while (Serial1.available()) {
-      char c = Serial1.read(); resp += c;
+    while (serial.available()) {
+      char c = serial.read(); resp += c;
       if (resp.length() > 2048) resp.remove(0, resp.length() - 2048);
       if (resp.indexOf("+CME ERROR") >= 0 || resp.indexOf("ERROR") >= 0) {
         gotError = true; pingResultMsg = "模组返回错误"; break;
@@ -139,9 +164,9 @@ void pingController(AsyncWebServerRequest* request) {
     delay(10);
   }
 
-  SimDispatcher::resumeReader();
+  SimDispatcher::resumeReader(modemId);
 
-  sendATCommand("AT+CGACT=0,1", 5000);
+  sendATCommand(modemId, "AT+CGACT=0,1", 5000);
 
   if (gotPingResult && pingResultMsg.indexOf("延迟") >= 0) {
     sendJsonResponse(request, true,  pingResultMsg);
@@ -153,12 +178,13 @@ void pingController(AsyncWebServerRequest* request) {
 }
 
 void queryController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
   String type = request->hasParam("type") ? request->getParam("type")->value() : "";
   bool success = false;
   String message;
 
   if (type == "ati") {
-    String resp = sendATCommand("ATI", 2000);
+    String resp = sendATCommand(modemId, "ATI", 2000);
     if (resp.indexOf("OK") >= 0) {
       success = true;
       String mfr, model, ver;
@@ -183,7 +209,7 @@ void queryController(AsyncWebServerRequest* request) {
     } else { message = "查询失败"; }
   }
   else if (type == "signal") {
-    String resp = sendATCommand("AT+CESQ", 2000);
+    String resp = sendATCommand(modemId, "AT+CESQ", 2000);
     if (resp.indexOf("+CESQ:") >= 0) {
       success = true;
       int idx = resp.indexOf("+CESQ:");
@@ -209,7 +235,7 @@ void queryController(AsyncWebServerRequest* request) {
   }
   else if (type == "siminfo") {
     success = true; message = "<table class='info-table'>";
-    String resp = sendATCommand("AT+CIMI", 2000);
+    String resp = sendATCommand(modemId, "AT+CIMI", 2000);
     String imsi = "未知";
     if (resp.indexOf("OK") >= 0) {
       int s = resp.indexOf('\n'), e = resp.indexOf('\n', s + 1);
@@ -217,11 +243,11 @@ void queryController(AsyncWebServerRequest* request) {
       if (e > s) { imsi = resp.substring(s + 1, e); imsi.trim(); if (imsi == "OK" || imsi.length() < 10) imsi = "未知"; }
     }
     message += "<tr><td>IMSI</td><td>" + imsi + "</td></tr>";
-    resp = sendATCommand("AT+ICCID", 2000);
+    resp = sendATCommand(modemId, "AT+ICCID", 2000);
     String iccid = "未知";
     if (resp.indexOf("+ICCID:") >= 0) { int idx = resp.indexOf("+ICCID:"); String tmp = resp.substring(idx + 7); int ei = tmp.indexOf('\r'); if (ei < 0) ei = tmp.indexOf('\n'); if (ei > 0) iccid = tmp.substring(0, ei); iccid.trim(); }
     message += "<tr><td>ICCID</td><td>" + iccid + "</td></tr>";
-    resp = sendATCommand("AT+CNUM", 2000);
+    resp = sendATCommand(modemId, "AT+CNUM", 2000);
     String phoneNum = "未存储或不支持";
     if (resp.indexOf("+CNUM:") >= 0) { int idx = resp.indexOf(",\""); if (idx >= 0) { int ei = resp.indexOf("\"", idx + 2); if (ei > idx) phoneNum = resp.substring(idx + 2, ei); } }
     message += "<tr><td>本机号码</td><td>" + phoneNum + "</td></tr>";
@@ -229,20 +255,20 @@ void queryController(AsyncWebServerRequest* request) {
   }
   else if (type == "network") {
     success = true; message = "<table class='info-table'>";
-    String resp = sendATCommand("AT+CEREG?", 2000);
+    String resp = sendATCommand(modemId, "AT+CEREG?", 2000);
     String regStatus = "未知";
     if (resp.indexOf("+CEREG:") >= 0) {
       int idx = resp.indexOf("+CEREG:"); String tmp = resp.substring(idx + 7); int ci = tmp.indexOf(',');
       if (ci >= 0) { int s = tmp.substring(ci + 1, ci + 2).toInt(); const char* names[] = {"未注册，未搜索","已注册，本地网络","未注册，正在搜索","注册被拒绝","未知","已注册，漫游"}; regStatus = (s >= 0 && s <= 5) ? names[s] : "状态码:" + String(s); }
     }
     message += "<tr><td>网络注册</td><td>" + regStatus + "</td></tr>";
-    resp = sendATCommand("AT+COPS?", 2000);
+    resp = sendATCommand(modemId, "AT+COPS?", 2000);
     String oper = "未知";
     if (resp.indexOf("+COPS:") >= 0) { int idx = resp.indexOf(",\""); if (idx >= 0) { int ei = resp.indexOf("\"", idx + 2); if (ei > idx) oper = resp.substring(idx + 2, ei); } }
     message += "<tr><td>运营商</td><td>" + oper + "</td></tr>";
-    resp = sendATCommand("AT+CGACT?", 2000);
+    resp = sendATCommand(modemId, "AT+CGACT?", 2000);
     message += "<tr><td>数据连接</td><td>" + String(resp.indexOf("+CGACT: 1,1") >= 0 ? "已激活" : "未激活") + "</td></tr>";
-    resp = sendATCommand("AT+CGDCONT?", 2000);
+    resp = sendATCommand(modemId, "AT+CGDCONT?", 2000);
     String apn = "未知";
     if (resp.indexOf("+CGDCONT:") >= 0) { int idx = resp.indexOf(",\""); if (idx >= 0) { idx = resp.indexOf(",\"", idx + 2); if (idx >= 0) { int ei = resp.indexOf("\"", idx + 2); if (ei > idx) apn = resp.substring(idx + 2, ei); if (apn.length() == 0) apn = "(自动)"; } } }
     message += "<tr><td>APN</td><td>" + apn + "</td></tr>";
@@ -276,12 +302,13 @@ void queryController(AsyncWebServerRequest* request) {
 }
 
 void flightModeController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
   String action = request->hasParam("action") ? request->getParam("action")->value() : "";
   bool success = false;
   String message;
 
   if (action == "query") {
-    String resp = sendATCommand("AT+CFUN?", 2000);
+    String resp = sendATCommand(modemId, "AT+CFUN?", 2000);
     if (resp.indexOf("+CFUN:") >= 0) {
       success = true;
       int idx = resp.indexOf("+CFUN:"); int mode = resp.substring(idx + 6).toInt();
@@ -297,11 +324,11 @@ void flightModeController(AsyncWebServerRequest* request) {
     } else { message = "查询失败"; }
   }
   else if (action == "toggle") {
-    String resp = sendATCommand("AT+CFUN?", 2000);
+    String resp = sendATCommand(modemId, "AT+CFUN?", 2000);
     if (resp.indexOf("+CFUN:") >= 0) {
       int idx = resp.indexOf("+CFUN:"); int cur = resp.substring(idx + 6).toInt();
       int newMode = (cur == 1) ? 4 : 1;
-      String setResp = sendATCommand(("AT+CFUN=" + String(newMode)).c_str(), 5000);
+      String setResp = sendATCommand(modemId, ("AT+CFUN=" + String(newMode)).c_str(), 5000);
       if (setResp.indexOf("OK") >= 0) {
         success = true;
         message = (newMode == 4) ? "已开启飞行模式 ✈️<br>模组射频已关闭，无法收发短信" : "已关闭飞行模式 🟢<br>模组恢复正常工作";
@@ -309,11 +336,11 @@ void flightModeController(AsyncWebServerRequest* request) {
     } else { message = "无法获取当前状态"; }
   }
   else if (action == "on") {
-    String resp = sendATCommand("AT+CFUN=4", 5000);
+    String resp = sendATCommand(modemId, "AT+CFUN=4", 5000);
     if (resp.indexOf("OK") >= 0) { success = true; message = "已开启飞行模式 ✈️"; } else { message = "开启失败: " + resp; }
   }
   else if (action == "off") {
-    String resp = sendATCommand("AT+CFUN=1", 5000);
+    String resp = sendATCommand(modemId, "AT+CFUN=1", 5000);
     if (resp.indexOf("OK") >= 0) { success = true; message = "已关闭飞行模式 🟢"; } else { message = "关闭失败: " + resp; }
   }
   else { message = "未知操作"; }
@@ -322,6 +349,7 @@ void flightModeController(AsyncWebServerRequest* request) {
 }
 
 void atCommandController(AsyncWebServerRequest* request) {
+  ModemId modemId = requestModemId(request);
   // 远程 AT 桥会话期间拒绝网页注入：SIM AKA 的逻辑通道开/APDU/关是粘性序列，
   // 中间插入一条 CSIM/CGLA 会静默破坏交换结果。
   if (atBridgeSessionActive()) { sendJsonResponse(request, false, "远程 AT 会话进行中，请稍后重试"); return; }
@@ -338,7 +366,7 @@ void atCommandController(AsyncWebServerRequest* request) {
   }
 
   LOG("HTOOLS", "网页端发送AT指令: %s（超时 %lu ms）", cmd.c_str(), timeoutMs);
-  String resp = sendATCommand(cmd.c_str(), timeoutMs);
+  String resp = sendATCommand(modemId, cmd.c_str(), timeoutMs);
   LOG("HTOOLS", "模组响应: %s", resp.c_str());
 
   if (resp.length() > 0) {

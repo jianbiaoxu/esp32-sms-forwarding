@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "../modem/modem_types.h"
 
 // 拼接短信参数
 constexpr int          MAX_CONCAT_PARTS    = 10;        // 单条拼接短信最多多少分片
@@ -49,14 +50,17 @@ public:
 
   // 通过 PDU 模式发送短信；支持中文 / 长短信自动拆分。
   // 返回 true 表示模组已接收（不代表对端送达）。
-  static bool sendPDU(const char* phoneNumber, const char* message);
+  static bool sendPDU(ModemId modemId, const char* phoneNumber, const char* message);
+  static bool sendPDU(const char* phoneNumber, const char* message) {
+    return sendPDU(MODEM_PRIMARY, phoneNumber, message);
+  }
 
   // 启动 SMS 处理任务（独立 FreeRTOS 任务，避免 URC 回调链路过长阻塞 Reader Task）。
   // 必须在 Sim::startReaderTask() 之前调用。
   static void startProcTask();
 
   // URC 路由入口（由 SIM Reader Task 上下文调用）
-  static void handleCMTHeader();              // +CMT: 短信头到达
-  static void handlePDU(const String& line);  // PDU 内容行
-  static void handleUSSD(const String& line); // +CUSD: USSD 应答
+  static void handleCMTHeader(ModemId modemId);              // +CMT: 短信头到达
+  static void handlePDU(ModemId modemId, const String& line);  // PDU 内容行
+  static void handleUSSD(ModemId modemId, const String& line); // +CUSD: USSD 应答
 };

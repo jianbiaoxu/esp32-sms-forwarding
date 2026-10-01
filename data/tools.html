@@ -298,7 +298,24 @@
       </div>
 
       <div class="section">
+        <div class="section-title">🔌 ML307 双模组 UART 配置</div>
+        <div class="hint">
+          两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。GPIO9 是 ESP32-C3
+          启动相关引脚，按住 BOOT 或外部电平可能影响上电启动，请确认硬件连接。
+        </div>
+        <div id="modemCards"></div>
+        <button type="button" onclick="saveModemConfig()" style="background:#1976d2;width:auto;">
+          💾 保存UART配置并重启
+        </button>
+        <div class="result-box" id="modemConfigResult"></div>
+      </div>
+
+      <div class="section">
         <div class="section-title">📤 发送短信</div>
+        <div class="form-group">
+          <label>发送模组</label>
+          <select id="toolModem"></select>
+        </div>
         <div class="form-group">
           <label>目标号码</label>
           <input type="text" id="smsPhone" placeholder="13800138000" />
@@ -931,6 +948,117 @@
           });
       }
 
+      function escapeHtml(value) {
+        return String(value === undefined || value === null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function selectedToolModem() {
+        var el = document.getElementById("toolModem");
+        return el ? parseInt(el.value || "0", 10) : 0;
+      }
+
+      function renderModemCards(modems) {
+        var cards = document.getElementById("modemCards");
+        var selector = document.getElementById("toolModem");
+        cards.innerHTML = "";
+        selector.innerHTML = "";
+        for (var i = 0; i < 2; i++) {
+          var modem = modems[i] || {
+            id: i,
+            enabled: i === 0,
+            name: "SIM" + (i + 1),
+            uart: i === 0 ? "UART1" : "UART0",
+            rxPin: i === 0 ? 4 : 9,
+            txPin: i === 0 ? 3 : 10,
+            enPin: i === 0 ? 5 : 6,
+          };
+          var id = modem.id !== undefined ? modem.id : i;
+          cards.insertAdjacentHTML(
+            "beforeend",
+            '<div style="border:1px solid #d7e3ef;border-radius:6px;padding:12px;margin:10px 0;background:#f8fbff;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+                '<strong>ML307R_' + (id + 1) + '（' + escapeHtml(modem.uart || (id === 0 ? "UART1" : "UART0")) + '）</strong>' +
+                '<label style="margin:0;"><input type="checkbox" id="modemEnabled' + id + '" ' + (modem.enabled ? "checked" : "") + '> 启用</label>' +
+              '</div>' +
+              '<div class="form-group"><label>名称</label><input id="modemName' + id + '" value="' + escapeHtml(modem.name || ("SIM" + (id + 1))) + '"></div>' +
+              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">' +
+                '<div class="form-group"><label>RX GPIO</label><input type="number" id="modemRx' + id + '" value="' + modem.rxPin + '"></div>' +
+                '<div class="form-group"><label>TX GPIO</label><input type="number" id="modemTx' + id + '" value="' + modem.txPin + '"></div>' +
+                '<div class="form-group"><label>EN GPIO</label><input type="number" id="modemEn' + id + '" value="' + modem.enPin + '"></div>' +
+              '</div>' +
+              '<button type="button" style="background:#00897b;width:auto;margin-top:4px;" onclick="testPush(' + id + ')">📨 测试此模组推送</button>' +
+              '<div class="result-box" id="testPushResult' + id + '"></div>' +
+            '</div>'
+          );
+          selector.insertAdjacentHTML("beforeend", '<option value="' + id + '">ML307R_' + (id + 1) + ' - ' + escapeHtml(modem.name || ("SIM" + (id + 1))) + '</option>');
+        }
+      }
+
+      function loadModemConfig() {
+        return fetch("/api/config/detail")
+          .then(function (resp) {
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            return resp.json();
+          })
+          .then(function (data) {
+            renderModemCards(data.modems || []);
+          });
+      }
+
+      function saveModemConfig() {
+        var result = document.getElementById("modemConfigResult");
+        var modems = [];
+        for (var i = 0; i < 2; i++) {
+          modems.push({
+            id: i,
+            enabled: document.getElementById("modemEnabled" + i).checked,
+            name: document.getElementById("modemName" + i).value.trim(),
+            rxPin: parseInt(document.getElementById("modemRx" + i).value, 10),
+            txPin: parseInt(document.getElementById("modemTx" + i).value, 10),
+            enPin: parseInt(document.getElementById("modemEn" + i).value, 10),
+          });
+        }
+        result.className = "result-box result-loading";
+        result.style.display = "block";
+        result.textContent = "正在保存...";
+        fetch("/api/modems", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ modems: modems }),
+        })
+          .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+          .then(function (data) {
+            result.className = data.ok ? "result-box result-success" : "result-box result-error";
+            result.textContent = (data.ok ? "✅ " : "❌ ") + (data.message || data.error || "保存失败");
+          })
+          .catch(function (e) {
+            result.className = "result-box result-error";
+            result.textContent = "❌ 请求失败: " + e.message;
+          });
+      }
+
+      function testPush(modemId) {
+        var result = document.getElementById("testPushResult" + modemId);
+        result.className = "result-box result-loading";
+        result.style.display = "block";
+        result.textContent = "正在入队测试推送...";
+        fetch("/api/tools/test-push?modem=" + modemId)
+          .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+          .then(function (data) {
+            result.className = data.ok ? "result-box result-success" : "result-box result-error";
+            result.textContent = (data.ok ? "✅ " : "❌ ") + (data.message || data.error || "测试失败");
+          })
+          .catch(function (e) {
+            result.className = "result-box result-error";
+            result.textContent = "❌ 请求失败: " + e.message;
+          });
+      }
+
       function loadStatus() {
         document.getElementById("statusError").style.display = "none";
         fetch("/api/status")
@@ -998,6 +1126,7 @@
         var form = new FormData();
         form.append("phone", phone);
         form.append("content", content);
+        form.append("modem", String(selectedToolModem()));
 
         fetch("/sendsms", { method: "POST", body: form })
           .then(function (resp) {
@@ -1029,7 +1158,7 @@
         result.style.display = "block";
         result.textContent = "正在查询，请稍候...";
 
-        fetch("/query?type=" + encodeURIComponent(type))
+        fetch("/query?type=" + encodeURIComponent(type) + "&modem=" + selectedToolModem())
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             return resp.json();
@@ -1062,7 +1191,7 @@
         result.style.display = "block";
         result.textContent = "正在执行 Ping 操作，请稍候（最长等待30秒）...";
 
-        fetch("/ping", { method: "POST" })
+        fetch("/ping?modem=" + selectedToolModem(), { method: "POST" })
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             return resp.json();
@@ -1092,7 +1221,7 @@
         result.style.display = "block";
         result.textContent = "正在查询飞行模式状态...";
 
-        fetch("/flight?action=query")
+        fetch("/flight?action=query&modem=" + selectedToolModem())
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             return resp.json();
@@ -1157,7 +1286,7 @@
         result.style.display = "block";
         result.textContent = "正在切换飞行模式...";
 
-        fetch("/flight?action=toggle")
+        fetch("/flight?action=toggle&modem=" + selectedToolModem())
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             return resp.json();
@@ -1214,7 +1343,7 @@
         addLog(cmd, "user");
         input.value = "";
 
-        fetch("/at?cmd=" + encodeURIComponent(cmd))
+        fetch("/at?cmd=" + encodeURIComponent(cmd) + "&modem=" + selectedToolModem())
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             return resp.json();
@@ -1241,6 +1370,7 @@
 
       document.addEventListener("DOMContentLoaded", function () {
         loadStatus();
+        loadModemConfig();
         loadSoc();
         loadCoredumpInfo();
         startOtaVersionCheck();

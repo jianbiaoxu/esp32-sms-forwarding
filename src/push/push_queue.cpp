@@ -10,6 +10,7 @@ struct PushQueueItem {
   String      message;
   String      timestamp;
   MsgTypeInfo msgType;
+  ModemId     modemId;
 };
 
 static QueueHandle_t  s_queue      = nullptr;
@@ -21,7 +22,7 @@ void PushQueue::init() {
 }
 
 void PushQueue::enqueue(const String& sender, const String& message,
-                        const String& timestamp, const MsgTypeInfo& msgType) {
+                        const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
   if (!s_queue) return;
 
   // 队满时丢弃最旧条目，为新消息腾出空间
@@ -33,7 +34,7 @@ void PushQueue::enqueue(const String& sender, const String& message,
     }
   }
 
-  PushQueueItem* item = new PushQueueItem{sender, message, timestamp, msgType};
+  PushQueueItem* item = new PushQueueItem{sender, message, timestamp, msgType, modemId};
   if (xQueueSend(s_queue, &item, 0) != pdTRUE) {
     LOG("PUSHQ", "入队失败，丢弃消息 from=%s", sender.c_str());
     delete item;
@@ -53,7 +54,7 @@ void PushQueue::tick() {
 
   UBaseType_t remaining = uxQueueMessagesWaiting(s_queue);
   LOG("PUSHQ", "出队执行推送，队列剩余: %u 条", remaining);
-  Push::executeChain(item->sender, item->message, item->timestamp, item->msgType);
+  Push::executeChain(item->sender, item->message, item->timestamp, item->msgType, item->modemId);
   s_lastSendMs = millis();
   delete item;
 }

@@ -4,9 +4,11 @@
 #include "http/json_response.h"
 #include "../../logger/logger.h"
 #include <ArduinoJson.h>
+#include <math.h>
 
 void wifiGetController(AsyncWebServerRequest* request) {
   JsonDocument doc;
+  doc["wifiTxPower"] = config.wifiTxPower;
   JsonArray arr = doc["wifiList"].to<JsonArray>();
   for (int i = 0; i < config.wifiCount; i++) {
     JsonObject entry = arr.add<JsonObject>();
@@ -35,6 +37,24 @@ void wifiPostController(AsyncWebServerRequest* request, uint8_t* data, size_t le
   if ((int)arr.size() > MAX_WIFI_ENTRIES) {
     JsonResp::err(request, 400, "wifiList超过最大限制（5条）");
     return;
+  }
+
+  if (doc["wifiTxPower"].is<float>() || doc["wifiTxPower"].is<int>()) {
+    float power = doc["wifiTxPower"].as<float>();
+    const float supported[] = {-1.0f, 2.0f, 5.0f, 7.0f, 8.5f, 11.0f,
+                               13.0f, 15.0f, 17.0f, 18.5f, 19.0f, 19.5f};
+    bool matched = false;
+    for (float value : supported) {
+      if (fabsf(power - value) < 0.01f) {
+        config.wifiTxPower = value;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      JsonResp::err(request, 400, "WiFi发射功率不是ESP32支持的档位");
+      return;
+    }
   }
 
   int count = 0;

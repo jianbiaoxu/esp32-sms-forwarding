@@ -26,33 +26,46 @@ public:
   // 本方法用「MANAGE CHANNEL open 返回的通道号是否为 1」直接检测卡会话是否干净，
   // 不干净则用 AT+MREBOOT 软复位兜底（实测复位到 SIM 可用约 2.3s）。
   // 顺带把残留逻辑通道清掉，并保证返回时 AT 接口已就绪。
-  static void     ensureFreshModemSession();
+  static void     ensureFreshModemSession(ModemId modemId);
+  static void     ensureFreshModemSession() { ensureFreshModemSession(MODEM_PRIMARY); }
 
   // 初始化 SIM 子系统：UART、GPIO、状态变量；不会立刻发 AT。
-  static void     init();
+  static void     init(ModemId modemId);
+  static void     init() { init(MODEM_PRIMARY); }
 
   // 周期 tick：驱动状态机，必要时重试初始化、刷新信号强度等。
-  static void     tick();
+  static void     tick(ModemId modemId);
+  static void     tick() { tick(MODEM_PRIMARY); }
 
   // 主动拉取一次 SIM 信息（运营商/信号/号码），通常 SIM_READY 后调用。
-  static void     fetchInfo();
+  static void     fetchInfo(ModemId modemId);
+  static void     fetchInfo() { fetchInfo(MODEM_PRIMARY); }
 
   // 注册 URC 回调到 SimDispatcher，并启动 Reader Task。
   // 应在 setup() 末尾、所有模块初始化完毕后调用。
-  static void     startReaderTask();
+  static void     startReaderTask(ModemId modemId);
+  static void     startReaderTask() { startReaderTask(MODEM_PRIMARY); }
 
   // 状态与缓存值（READY 之前一律返回 "未知"）
-  static SimState state();
-  static String   carrier();
-  static String   signal();
-  static String   phoneNum();
-  static bool     isNumberReady();
+  static SimState state(ModemId modemId);
+  static SimState state() { return state(MODEM_PRIMARY); }
+  static String   carrier(ModemId modemId);
+  static String   carrier() { return carrier(MODEM_PRIMARY); }
+  static String   signal(ModemId modemId);
+  static String   signal() { return signal(MODEM_PRIMARY); }
+  static String   phoneNum(ModemId modemId);
+  static String   phoneNum() { return phoneNum(MODEM_PRIMARY); }
+  static bool     isNumberReady(ModemId modemId);
+  static bool     isNumberReady() { return isNumberReady(MODEM_PRIMARY); }
 
   // URC 路由入口：dispatcher 解析出的 URC 类型 → 转发到 SMS / Call / Sim 等模块。
-  static void     handleURC(const String& line);
+  static void     handleURC(ModemId modemId, const String& line);
 
   // 业务方法：通过 AT+CNUM 查询本机号码（阻塞，最长 timeoutMs 毫秒）。
   // 内部经 SimDispatcher::sendCommand 与互斥队列交互；安全可在任意上下文调用，
   // 但**不要**在 Reader Task 自身的 URC 回调里调用，否则会死锁。
-  static String   queryPhoneNumber(unsigned long timeoutMs = 3000);
+  static String   queryPhoneNumber(ModemId modemId, unsigned long timeoutMs = 3000);
+  static String   queryPhoneNumber(unsigned long timeoutMs = 3000) {
+    return queryPhoneNumber(MODEM_PRIMARY, timeoutMs);
+  }
 };

@@ -622,6 +622,24 @@
             WiFi，设备启动时按顺序尝试连接。修改后设备将立即重启以应用新 WiFi
             配置。
           </div>
+          <div class="form-group">
+            <label for="wifiTxPower">WiFi 射频发射功率</label>
+            <select id="wifiTxPower">
+              <option value="-1">-1 dBm</option>
+              <option value="2">2 dBm</option>
+              <option value="5">5 dBm</option>
+              <option value="7">7 dBm</option>
+              <option value="8.5" selected>8.5 dBm（默认）</option>
+              <option value="11">11 dBm</option>
+              <option value="13">13 dBm</option>
+              <option value="15">15 dBm</option>
+              <option value="17">17 dBm</option>
+              <option value="18.5">18.5 dBm</option>
+              <option value="19">19 dBm</option>
+              <option value="19.5">19.5 dBm</option>
+            </select>
+            <div class="hint">修改后重启生效；实际档位受 ESP32-C3 射频能力限制。</div>
+          </div>
           <div id="wifiList"></div>
           <button
             type="button"
@@ -1162,6 +1180,9 @@
           !!data.atBridgeEnabled;
         document.getElementById("thinModeEnabled").checked =
           !!data.thinModeEnabled;
+        document.getElementById("wifiTxPower").value = String(
+          data.wifiTxPower !== undefined ? data.wifiTxPower : 8.5,
+        );
 
         var channels = data.pushChannels || [];
         g_pushChannels = [];
@@ -1319,6 +1340,9 @@
               data.wifiList && data.wifiList.length > 0
                 ? data.wifiList
                 : [{ ssid: "", password: "" }];
+            if (data.wifiTxPower !== undefined) {
+              document.getElementById("wifiTxPower").value = String(data.wifiTxPower);
+            }
             renderWifiList();
           });
       }
@@ -1348,7 +1372,12 @@
         fetch("/api/wifi", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ wifiList: list }),
+          body: JSON.stringify({
+            wifiList: list,
+            wifiTxPower: parseFloat(
+              document.getElementById("wifiTxPower").value || "8.5",
+            ),
+          }),
         })
           .then(function (resp) {
             if (!resp.ok) throw new Error("HTTP " + resp.status);

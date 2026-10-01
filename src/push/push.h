@@ -36,14 +36,17 @@ class Push {
 public:
   // 向所有启用的渠道派发一条消息；入队至 PushQueue 串行执行。
   static void send(const String& sender, const String& message,
-                   const String& timestamp, const MsgTypeInfo& msgType);
+                   const String& timestamp, const MsgTypeInfo& msgType,
+                   ModemId modemId = MODEM_PRIMARY);
 
   // 直接执行推送链（不经过 PushQueue），由 PushQueue::tick()/PushRetry::tick() 调用。
   // 调用方须确保不在 sms_proc 等后台任务中直接调用（避免阻塞 SIM reader）。
   static void executeChain(const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType);
+                      const String& timestamp, const MsgTypeInfo& msgType,
+                      ModemId modemId = MODEM_PRIMARY);
 
   // 单渠道推送（通常由重试队列回调）。返回 true 表示该渠道成功。
   static bool executeChannel(int channelIdx, const String& sender, const String& message,
-                          const String& timestamp, const MsgTypeInfo& msgType);
+                          const String& timestamp, const MsgTypeInfo& msgType,
+                          ModemId modemId = MODEM_PRIMARY);
 };

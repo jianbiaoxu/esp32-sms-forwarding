@@ -121,11 +121,11 @@ ESP32-C3 与 ML307R/C/A 通过串口（UART）连接，接线如下：
 
 ### 方式一：图形化烧录（推荐，零安装）
 
-1. 从 [GitHub Releases](https://github.com/maxming2333/esp32-sms-forwarding/releases/latest) 下载最新版固件压缩包，解压获得 `full.bin`
+1. 准备构建产物中的 `firmware.factory.bin`
 2. 使用 Chrome 或 Edge 浏览器（88+）打开 [ESPConnect](https://thelastoutpostworkshop.github.io/ESPConnect/)
 3. 波特率选择 `460800`
 4. 点击「连接」，在浏览器弹窗中选择 "USB JTAG/serial debug unit" 设备
-5. 进入「闪存工具」→「烧录固件」，上传 `full.bin` 即可完成全量烧录
+5. 进入「闪存工具」→「烧录固件」，上传 `firmware.factory.bin` 即可完成全量烧录
 
 ### 方式二：命令行烧录（进阶）
 
@@ -133,19 +133,20 @@ ESP32-C3 与 ML307R/C/A 通过串口（UART）连接，接线如下：
 pip install "esptool>=4.8"
 
 # 全量烧录（推荐，地址 0x0）
-esptool --chip esp32c3 --baud 460800 write_flash 0x0 full.bin
+esptool --chip esp32c3 --baud 460800 write_flash 0x0 firmware.factory.bin
 
-# 单独更新 Web UI 文件系统（地址 0x290000）
-esptool --chip esp32c3 --baud 460800 write_flash 0x290000 littlefs.bin
+# 单独更新 Web UI 文件系统（地址 0x3D0000）
+esptool --chip esp32c3 --baud 460800 write_flash 0x3D0000 littlefs.bin
 ```
 
 ### 固件文件说明
 
 | 文件 | 用途 | 烧录地址 |
 |------|------|---------|
-| `full.bin` | 全量固件（bootloader + partitions + firmware + Web UI），首次烧录推荐 | `0x0` |
-| `main.bin` | 主固件（bootloader + partitions + firmware），不含 Web UI | `0x0` |
-| `littlefs.bin` | 仅 Web UI 文件系统，更新页面时单独使用 | `0x290000` |
+| `firmware.factory.bin` | 全量固件（bootloader + partitions + firmware + Web UI），首次烧录推荐 | `0x0` |
+| `firmware.main.bin` | 主固件（bootloader + partitions + firmware），不含 Web UI | `0x0` |
+| `firmware.bin` | 仅应用固件，已有匹配 bootloader/分区表时使用 | `0x10000` |
+| `littlefs.bin` | 仅 Web UI 文件系统，更新页面时单独使用 | `0x3D0000` |
 
 ## 首次配置
 
@@ -222,4 +223,4 @@ pio run -t upload
 pio run -t uploadfs
 ```
 
-> `uploadfs` 会先通过 Python 脚本 gzip 压缩 `data/` 目录下的 HTML 文件，再上传至 ESP32-C3 的 LittleFS 分区（地址 `0x290000`）。
+> `uploadfs` 会先通过 Python 脚本 gzip 压缩 `data/` 目录下的 HTML 文件，再上传至 ESP32-C3 的 LittleFS 分区（地址 `0x3D0000`）。

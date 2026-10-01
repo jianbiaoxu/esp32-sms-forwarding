@@ -13,9 +13,9 @@ void TimeSync::init() {
   LOG("TIME", "时间模块已初始化（默认时区 UTC+8）");
 }
 
-void TimeSync::syncFromSIM() {
+void TimeSync::syncFromSIM(ModemId modemId) {
   String resp;
-  bool ok = SimDispatcher::sendCommand("AT+CCLK?", 3000, &resp, false);
+  bool ok = SimDispatcher::sendCommand(modemId, "AT+CCLK?", 3000, &resp, false);
   if (!ok && resp.indexOf("+CCLK:") < 0) {
     LOG("TIME", "AT+CCLK? 无响应，跳过 SIM 时间同步");
     return;

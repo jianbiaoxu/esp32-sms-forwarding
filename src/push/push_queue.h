@@ -30,7 +30,8 @@ public:
 
   // 入队（线程安全；队满时自动丢弃最旧条目并记录日志）
   static void enqueue(const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType);
+                      const String& timestamp, const MsgTypeInfo& msgType,
+                      ModemId modemId = MODEM_PRIMARY);
 
   // 主循环调用：非阻塞出队一条消息，调用 Push::executeChain() 执行
   static void tick();

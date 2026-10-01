@@ -9,19 +9,30 @@
 
 namespace {
 
-QueueHandle_t     s_queue             = nullptr;
-TaskHandle_t      s_task              = nullptr;
-SemaphoreHandle_t s_directTxnMutex    = nullptr;
-SimUrcCallback    s_urcCb             = nullptr;
-SimCmdSlot*       s_activeCmd         = nullptr;
-unsigned long     s_cmdStartMs        = 0;
-volatile bool     s_pauseRequested    = false;
-volatile bool     s_readerPaused      = false;
-bool              s_drainAfterTimeout = false;
-unsigned long     s_lastRxMs          = 0;
+struct DispatcherContext {
+    QueueHandle_t     queue             = nullptr;
+    TaskHandle_t      task              = nullptr;
+    SemaphoreHandle_t directTxnMutex    = nullptr;
+    SimUrcCallback    urcCb             = nullptr;
+    SimCmdSlot*       activeCmd         = nullptr;
+    unsigned long     cmdStartMs        = 0;
+    volatile bool     pauseRequested    = false;
+    volatile bool     readerPaused      = false;
+    bool              drainAfterTimeout = false;
+    unsigned long     lastRxMs          = 0;
+    bool              waitingPdu        = false;
+};
 
-// CMT PDU 行检测状态（是否等待 PDU 数据行）
-bool              s_waitingPdu        = false;
+DispatcherContext s_ctx[MODEM_COUNT];
+uint8_t s_taskIds[MODEM_COUNT] = {0, 1};
+
+static DispatcherContext& context(ModemId modemId) {
+    return s_ctx[isValidModemId(modemId) ? modemId : MODEM_PRIMARY];
+}
+
+static HardwareSerial& modemSerial(ModemId modemId) {
+    return modemId == 0 ? Serial1 : Serial0;
+}
 
 bool isFinalOkLine(const String& line) {
     String s = line;
@@ -37,7 +48,7 @@ bool isFinalErrorLine(const String& line) {
 
 // ---------- 内部 URC 识别 ----------
 
-bool isUrcLine(const String& line) {
+bool isUrcLine(ModemId modemId, const String& line) {
     if (line.equals("RING"))                   return true;
     // AT+CRC=1 会把来电指示从裸 RING 换成 +CRING: <type>(TS 27.007 §6.11)。这个
     // 设置和 CNMI 一样不进模组 NVM,模组自己重启后可能不是我们下发的那个值;不在此
@@ -61,7 +72,7 @@ bool isUrcLine(const String& line) {
     // 瘦模式下短信落存储并给出 +CMTI: 指示。必须在此识别为主动上报：否则它在
     // 某条命令在途时会被并入该命令的响应，直接污染 AT+CMGL 等结果。
     if (line.startsWith("+CMTI:"))             return true;
-    if (s_waitingPdu)                          return true;
+    if (context(modemId).waitingPdu)          return true;
     if (line.indexOf("+CPIN:") >= 0)           return true;
     if (line.startsWith("+SIMCARD:"))          return true;
     if (line.startsWith("+CUSD:"))             return true;
@@ -102,8 +113,8 @@ void expectedInfoPrefix(const char* cmd, char* out, size_t outSize) {
 // 前缀」——这是唯一无需命令知识表就能区分的信号。
 //
 // 等待 PDU 数据行时一律不认定为信息响应：那一行属于上一条 +CMT: 上报。
-bool solicitedInfoLine(const SimCmdSlot* slot, const String& line) {
-    if (slot == nullptr || s_waitingPdu) return false;
+bool solicitedInfoLine(const SimCmdSlot* slot, const String& line, bool waitingPdu) {
+    if (slot == nullptr || waitingPdu) return false;
     char prefix[40];
     expectedInfoPrefix(slot->cmd, prefix, sizeof(prefix));
     if (prefix[0] == '\0') return false;
@@ -112,53 +123,54 @@ bool solicitedInfoLine(const SimCmdSlot* slot, const String& line) {
 
 // ---------- 内部 URC 路由 ----------
 
-void routeURC(const String& line) {
-    if (s_urcCb == nullptr) return;
+void routeURC(ModemId modemId, const String& line) {
+    SimUrcCallback cb = context(modemId).urcCb;
+    if (cb == nullptr) return;
 
     if (line.equals("RING") || line.startsWith("+CRING:")) {
-        s_urcCb(SimUrcType::RING, line);
+        cb(modemId, SimUrcType::RING, line);
         return;
     }
     if (line.startsWith("+CMTI:")) {
-        s_urcCb(SimUrcType::CMTI, line);
+        cb(modemId, SimUrcType::CMTI, line);
         return;
     }
     if (line.startsWith("+MATREADY")) {
-        s_urcCb(SimUrcType::MATREADY, line);
+        cb(modemId, SimUrcType::MATREADY, line);
         return;
     }
     if (line.startsWith("+CLIP:")) {
-        s_urcCb(SimUrcType::CLIP, line);
+        cb(modemId, SimUrcType::CLIP, line);
         return;
     }
     if (line.startsWith("+CMT:")) {
-        s_waitingPdu = true;
-        s_urcCb(SimUrcType::CMT, line);
+        context(modemId).waitingPdu = true;
+        cb(modemId, SimUrcType::CMT, line);
         return;
     }
-    if (s_waitingPdu) {
-        s_waitingPdu = false;
-        s_urcCb(SimUrcType::CMT_PDU, line);
+    if (context(modemId).waitingPdu) {
+        context(modemId).waitingPdu = false;
+        cb(modemId, SimUrcType::CMT_PDU, line);
         return;
     }
     if (line.indexOf("+CPIN: READY") >= 0) {
-        s_urcCb(SimUrcType::CPIN_READY, line);
+        cb(modemId, SimUrcType::CPIN_READY, line);
         return;
     }
     if (line.indexOf("+CPIN: NOT INSERTED") >= 0 || line.startsWith("+SIMCARD:0")) {
-        s_urcCb(SimUrcType::SIM_REMOVE, line);
+        cb(modemId, SimUrcType::SIM_REMOVE, line);
         return;
     }
     if (line.startsWith("+CUSD:")) {
-        s_urcCb(SimUrcType::CUSD, line);
+        cb(modemId, SimUrcType::CUSD, line);
         return;
     }
     if (line.startsWith("+CLCC:")) {
-        s_urcCb(SimUrcType::CLCC, line);
+        cb(modemId, SimUrcType::CLCC, line);
         return;
     }
     if (line.equals("NO CARRIER") || line.equals("BUSY") || line.equals("NO ANSWER")) {
-        s_urcCb(SimUrcType::CALL_END, line);
+        cb(modemId, SimUrcType::CALL_END, line);
         return;
     }
     // 走到这里说明模组主动报了一条我们不认识的东西。此前是无声丢弃:模组说了话、
@@ -173,9 +185,9 @@ void routeURC(const String& line) {
 void appendResponseLine(SimCmdSlot* slot, const String& line) {
     if (slot->respBuf == nullptr || slot->respCap == 0) return;
     size_t existing = strnlen(slot->respBuf, slot->respCap);
-    if (existing >= SIM_RESP_BUF_SIZE - 1) return;
+    if (existing >= slot->respCap - 1) return;
 
-    size_t remaining = (SIM_RESP_BUF_SIZE - 1) - existing;
+    size_t remaining = (slot->respCap - 1) - existing;
     size_t copyLen = line.length();
     if (copyLen > remaining) copyLen = remaining;
     if (copyLen > 0) {
@@ -184,7 +196,7 @@ void appendResponseLine(SimCmdSlot* slot, const String& line) {
         slot->respBuf[existing] = '\0';
     }
 
-    if (existing < SIM_RESP_BUF_SIZE - 1) {
+    if (existing < slot->respCap - 1) {
         slot->respBuf[existing++] = '\n';
         slot->respBuf[existing] = '\0';
     }
@@ -192,89 +204,92 @@ void appendResponseLine(SimCmdSlot* slot, const String& line) {
 
 // ---------- SIM reader task ----------
 
-void simReaderTask(void*) {
+void simReaderTaskWithId(void* arg) {
+    ModemId modemId = arg == nullptr ? MODEM_PRIMARY : *(static_cast<uint8_t*>(arg));
+    DispatcherContext& state = context(modemId);
+    HardwareSerial& serial = modemSerial(modemId);
     String lineBuf;
     // 预分配：SMS PDU hex 串典型约 340 字符；AT+CSIM 的长响应行可达约 530 字符，
     // 按 SIM_LINE_BUF_MAX 预留避免反复扩容
     lineBuf.reserve(SIM_LINE_BUF_MAX);
 
     for (;;) {
-        if (s_pauseRequested && s_activeCmd == nullptr) {
-            s_readerPaused = true;
-            while (s_pauseRequested) {
+        if (state.pauseRequested && state.activeCmd == nullptr) {
+            state.readerPaused = true;
+            while (state.pauseRequested) {
                 vTaskDelay(pdMS_TO_TICKS(5));
             }
-            s_readerPaused = false;
+            state.readerPaused = false;
         }
 
-        // 读取 Serial1 字符，按行处理
-        while (Serial1.available()) {
-            char c = (char)Serial1.read();
-            s_lastRxMs = millis();
+        // 读取对应硬件串口字符，按行处理
+        while (serial.available()) {
+            char c = (char)serial.read();
+            state.lastRxMs = millis();
             if (c == '\n') {
                 String line = lineBuf;
                 lineBuf = "";
 
                 if (line.length() == 0) continue;
 
-                if (s_activeCmd != nullptr) {
+                if (state.activeCmd != nullptr) {
                     // T015: 有活跃指令时先检查是否为 URC 行；但本命令自身的信息
                     // 响应不能被当作 URC 吞掉（见 solicitedInfoLine 注释）。
-                    if (isUrcLine(line) && !solicitedInfoLine(s_activeCmd, line)) {
+                    if (isUrcLine(modemId, line) && !solicitedInfoLine(state.activeCmd, line, state.waitingPdu)) {
                         LOG("SIMDSP", "[URC-during-cmd] %s", line.c_str());
-                        routeURC(line);
+                        routeURC(modemId, line);
                     } else {
-                        appendResponseLine(s_activeCmd, line);
+                        appendResponseLine(state.activeCmd, line);
 
                         if (isFinalOkLine(line)) {
-                            s_activeCmd->isOk = true;
-                            xSemaphoreGive(s_activeCmd->doneSem);
-                            s_activeCmd = nullptr;
+                            state.activeCmd->isOk = true;
+                            xSemaphoreGive(state.activeCmd->doneSem);
+                            state.activeCmd = nullptr;
                         } else if (isFinalErrorLine(line)) {
-                            s_activeCmd->isOk = false;
-                            xSemaphoreGive(s_activeCmd->doneSem);
-                            s_activeCmd = nullptr;
+                            state.activeCmd->isOk = false;
+                            xSemaphoreGive(state.activeCmd->doneSem);
+                            state.activeCmd = nullptr;
                         }
                     }
                 } else {
-                    routeURC(line);
+                    routeURC(modemId, line);
                 }
             } else if (c != '\r') {
                 lineBuf += c;
                 if (lineBuf.length() > SIM_LINE_BUF_MAX) {
                     LOG("SIMDSP", "串口行超过 %u 字节，已丢弃", (unsigned)SIM_LINE_BUF_MAX);
                     lineBuf = "";
-                    s_waitingPdu = false;
+                    state.waitingPdu = false;
                 }
             }
         }
 
         // 取下一条命令（若当前无活跃命令）
-        if (s_activeCmd == nullptr && !s_pauseRequested) {
-            if (s_drainAfterTimeout) {
-                if (millis() - s_lastRxMs < SIM_TIMEOUT_DRAIN_QUIET_MS) {
+        if (state.activeCmd == nullptr && !state.pauseRequested) {
+            if (state.drainAfterTimeout) {
+                if (millis() - state.lastRxMs < SIM_TIMEOUT_DRAIN_QUIET_MS) {
                     vTaskDelay(pdMS_TO_TICKS(5));
                     continue;
                 }
-                s_drainAfterTimeout = false;
+                state.drainAfterTimeout = false;
             }
             SimCmdSlot* ptr = nullptr;
-            if (xQueueReceive(s_queue, &ptr, 0) == pdTRUE && ptr != nullptr) {
-                s_activeCmd   = ptr;
-                s_cmdStartMs  = millis();
-                Serial1.println(s_activeCmd->cmd);
+            if (xQueueReceive(state.queue, &ptr, 0) == pdTRUE && ptr != nullptr) {
+                state.activeCmd   = ptr;
+                state.cmdStartMs  = millis();
+                serial.println(state.activeCmd->cmd);
             }
         }
 
         // 超时检测
-        if (s_activeCmd != nullptr &&
-            millis() - s_cmdStartMs > s_activeCmd->timeoutMs) {
-            LOG("SIMDSP", "AT 指令超时: %.96s", s_activeCmd->cmd);
-            s_activeCmd->isOk = false;
-            xSemaphoreGive(s_activeCmd->doneSem);
-            s_activeCmd = nullptr;
-            s_drainAfterTimeout = true;
-            s_lastRxMs = millis();
+        if (state.activeCmd != nullptr &&
+            millis() - state.cmdStartMs > state.activeCmd->timeoutMs) {
+            LOG("SIMDSP", "AT 指令超时: %.96s", state.activeCmd->cmd);
+            state.activeCmd->isOk = false;
+            xSemaphoreGive(state.activeCmd->doneSem);
+            state.activeCmd = nullptr;
+            state.drainAfterTimeout = true;
+            state.lastRxMs = millis();
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -285,30 +300,42 @@ void simReaderTask(void*) {
 
 // ---------- 公共 API 实现 ----------
 
-void SimDispatcher::registerUrcCallback(SimUrcCallback cb) {
-    s_urcCb = cb;
+void SimDispatcher::registerUrcCallback(ModemId modemId, SimUrcCallback cb) {
+    context(modemId).urcCb = cb;
 }
 
-void SimDispatcher::start() {
-    s_queue = xQueueCreate(SIM_CMD_QUEUE_SIZE, sizeof(SimCmdSlot*));
-    if (s_queue == nullptr) {
+void SimDispatcher::start(ModemId modemId) {
+    if (!isValidModemId(modemId)) return;
+    DispatcherContext& state = context(modemId);
+    if (state.queue != nullptr) return;
+    state.queue = xQueueCreate(SIM_CMD_QUEUE_SIZE, sizeof(SimCmdSlot*));
+    if (state.queue == nullptr) {
         LOG("SIMDSP", "SimDispatcher::start: 队列创建失败");
         return;
     }
-    s_directTxnMutex = xSemaphoreCreateMutex();
-    if (s_directTxnMutex == nullptr) {
+    state.directTxnMutex = xSemaphoreCreateMutex();
+    if (state.directTxnMutex == nullptr) {
         LOG("SIMDSP", "SimDispatcher::start: 直接事务互斥锁创建失败");
-        vQueueDelete(s_queue);
-        s_queue = nullptr;
+        vQueueDelete(state.queue);
+        state.queue = nullptr;
         return;
     }
-    xTaskCreate(simReaderTask, "sim_reader", SIM_READER_TASK_STACK,
-                nullptr, SIM_READER_TASK_PRIORITY, &s_task);
+    char taskName[16];
+    snprintf(taskName, sizeof(taskName), "sim_reader_%u", (unsigned)modemId);
+    if (xTaskCreate(simReaderTaskWithId, taskName, SIM_READER_TASK_STACK,
+                    &s_taskIds[modemId], SIM_READER_TASK_PRIORITY, &state.task) != pdPASS) {
+        vSemaphoreDelete(state.directTxnMutex);
+        state.directTxnMutex = nullptr;
+        vQueueDelete(state.queue);
+        state.queue = nullptr;
+        LOG("SIMDSP", "SimDispatcher::start: reader task 创建失败");
+    }
 }
 
-bool SimDispatcher::sendCommand(const char* cmd, unsigned long timeoutMs,
+bool SimDispatcher::sendCommand(ModemId modemId, const char* cmd, unsigned long timeoutMs,
                     String* outResp, bool prio, size_t respCap) {
-    if (s_queue == nullptr) return false;
+    DispatcherContext& state = context(modemId);
+    if (state.queue == nullptr) return false;
     if (cmd == nullptr) return false;
 
     size_t cmdLen = strlen(cmd);
@@ -352,9 +379,9 @@ bool SimDispatcher::sendCommand(const char* cmd, unsigned long timeoutMs,
 
     BaseType_t sent;
     if (prio) {
-        sent = xQueueSendToFront(s_queue, &slot, pdMS_TO_TICKS(100));
+        sent = xQueueSendToFront(state.queue, &slot, pdMS_TO_TICKS(100));
     } else {
-        sent = xQueueSendToBack(s_queue, &slot, pdMS_TO_TICKS(100));
+        sent = xQueueSendToBack(state.queue, &slot, pdMS_TO_TICKS(100));
     }
 
     if (sent != pdTRUE) {
@@ -392,7 +419,8 @@ bool SimDispatcher::sendCommand(const char* cmd, unsigned long timeoutMs,
     return ok;
 }
 
-bool SimDispatcher::pauseReader(unsigned long timeoutMs) {
+bool SimDispatcher::pauseReader(ModemId modemId, unsigned long timeoutMs) {
+    DispatcherContext& state = context(modemId);
     // Reader task 不存在时一律拒绝独占。
     // 旧实现在此返回 true（语义是「没什么要暂停的，可以直接用串口」），但在
     // USB AT 透传模式下 SimDispatcher 根本不会启动，调用方拿到 true 后会裸写
@@ -400,18 +428,18 @@ bool SimDispatcher::pauseReader(unsigned long timeoutMs) {
     // 污染送给 USB 主机的 AT 流。
     // 正常流程中 startReaderTask() 之后 s_task 必然非空，且在此之前没有任何
     // 调用点，因此改为返回 false 不影响既有路径。
-    if (s_task == nullptr) return false;
-    if (s_directTxnMutex == nullptr) return false;
-    if (xSemaphoreTake(s_directTxnMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+    if (state.task == nullptr) return false;
+    if (state.directTxnMutex == nullptr) return false;
+    if (xSemaphoreTake(state.directTxnMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
         LOG("SIMDSP", "等待直接串口事务锁超时");
         return false;
     }
-    s_pauseRequested = true;
+    state.pauseRequested = true;
     unsigned long start = millis();
-    while (!s_readerPaused) {
+    while (!state.readerPaused) {
         if (millis() - start >= timeoutMs) {
-            s_pauseRequested = false;
-            xSemaphoreGive(s_directTxnMutex);
+            state.pauseRequested = false;
+            xSemaphoreGive(state.directTxnMutex);
             LOG("SIMDSP", "等待 reader 暂停超时");
             return false;
         }
@@ -420,21 +448,26 @@ bool SimDispatcher::pauseReader(unsigned long timeoutMs) {
     return true;
 }
 
-void SimDispatcher::resumeReader() {
-    s_pauseRequested = false;
-    if (s_directTxnMutex != nullptr) {
-        xSemaphoreGive(s_directTxnMutex);
+void SimDispatcher::resumeReader(ModemId modemId) {
+    DispatcherContext& state = context(modemId);
+    state.pauseRequested = false;
+    if (state.directTxnMutex != nullptr) {
+        xSemaphoreGive(state.directTxnMutex);
     }
 }
 
-bool SimDispatcher::routeIfUrc(const String& line) {
+bool SimDispatcher::routeIfUrc(ModemId modemId, const String& line) {
     if (line.length() == 0) return false;
-    if (!isUrcLine(line)) return false;
+    if (!isUrcLine(modemId, line)) return false;
     LOG("SIMDSP", "[URC-during-raw] %s", line.c_str());
-    routeURC(line);
+    routeURC(modemId, line);
     return true;
 }
 
-bool SimDispatcher::running() {
-    return s_queue != nullptr;
+bool SimDispatcher::running(ModemId modemId) {
+    return context(modemId).queue != nullptr;
+}
+
+HardwareSerial& SimDispatcher::serial(ModemId modemId) {
+    return modemSerial(isValidModemId(modemId) ? modemId : MODEM_PRIMARY);
 }

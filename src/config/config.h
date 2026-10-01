@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include "../modem/modem_types.h"
 
 // 推送通道类型
 enum PushType {
@@ -61,6 +62,14 @@ struct WifiEntry {
   String password;
 };
 
+struct ModemConfig {
+  bool   enabled;
+  String name;
+  int    rxPin;
+  int    txPin;
+  int    enPin;
+};
+
 struct Config {
   String     adminPhone;
   String     webUser;
@@ -84,6 +93,8 @@ struct Config {
   bool         thinModeEnabled;
   WifiEntry    wifiList[MAX_WIFI_ENTRIES];
   int          wifiCount;
+  float        wifiTxPower;
+  ModemConfig  modems[MODEM_COUNT];
   String       blacklist[MAX_BLACKLIST_ENTRIES];
   int          blacklistCount;
   PushStrategy pushStrategy;

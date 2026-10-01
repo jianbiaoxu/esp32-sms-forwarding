@@ -14,6 +14,16 @@ static String trimStr(const String& s) {
   return r;
 }
 
+static ModemConfig defaultModemConfig(ModemId id) {
+  ModemConfig modem{};
+  modem.enabled = true;
+  modem.name    = id == 0 ? "SIM1" : "SIM2";
+  modem.rxPin   = id == 0 ? 4 : 9;
+  modem.txPin   = id == 0 ? 3 : 10;
+  modem.enPin   = id == 0 ? 5 : 6;
+  return modem;
+}
+
 Config config;
 RebootSchedule rebootSchedule;
 
@@ -82,6 +92,23 @@ void ConfigStore::load() {
     }
   }
 
+  config.wifiTxPower = prefs.isKey("wifiTxPower") ? prefs.getFloat("wifiTxPower", 8.5f) : 8.5f;
+  if (config.wifiTxPower < -1.0f || config.wifiTxPower > 19.5f) {
+    config.wifiTxPower = 8.5f;
+  }
+
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    ModemConfig defaults = defaultModemConfig(i);
+    String prefix = "modem" + String(i);
+    config.modems[i].enabled = prefs.getBool((prefix + "En").c_str(), defaults.enabled);
+    config.modems[i].name    = prefs.isKey((prefix + "Name").c_str())
+                             ? prefs.getString((prefix + "Name").c_str(), defaults.name)
+                             : defaults.name;
+    config.modems[i].rxPin   = prefs.getInt((prefix + "Rx").c_str(), defaults.rxPin);
+    config.modems[i].txPin   = prefs.getInt((prefix + "Tx").c_str(), defaults.txPin);
+    config.modems[i].enPin   = prefs.getInt((prefix + "EnPin").c_str(), defaults.enPin);
+  }
+
   config.pushStrategy = (PushStrategy)(prefs.isKey("pushStrategy") ? prefs.getUChar("pushStrategy", 0) : 0);
   config.remark       = prefs.isKey("remark") ? prefs.getString("remark", "") : "";
 
@@ -141,6 +168,22 @@ void ConfigStore::save() {
   for (int i = 0; i < config.wifiCount; i++) {
     prefs.putString(("wifi" + String(i) + "ssid").c_str(), trimStr(config.wifiList[i].ssid));
     prefs.putString(("wifi" + String(i) + "pass").c_str(), trimStr(config.wifiList[i].password));
+  }
+
+  if (config.wifiTxPower < -1.0f || config.wifiTxPower > 19.5f) {
+    config.wifiTxPower = 8.5f;
+  }
+  prefs.putFloat("wifiTxPower", config.wifiTxPower);
+
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    ModemConfig defaults = defaultModemConfig(i);
+    ModemConfig& modem = config.modems[i];
+    if (modem.name.length() == 0) modem.name = defaults.name;
+    prefs.putBool(("modem" + String(i) + "En").c_str(), modem.enabled);
+    prefs.putString(("modem" + String(i) + "Name").c_str(), trimStr(modem.name).substring(0, 32));
+    prefs.putInt(("modem" + String(i) + "Rx").c_str(), modem.rxPin);
+    prefs.putInt(("modem" + String(i) + "Tx").c_str(), modem.txPin);
+    prefs.putInt(("modem" + String(i) + "EnPin").c_str(), modem.enPin);
   }
 
   prefs.putUChar("pushStrategy", (uint8_t)config.pushStrategy);
@@ -243,6 +286,10 @@ void ConfigStore::reset() {
   }
   config.wifiCount = 1;
   config.wifiList[0] = WifiEntry{"", ""};
+  config.wifiTxPower = 8.5f;
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    config.modems[i] = defaultModemConfig(i);
+  }
 
   rebootSchedule = RebootSchedule{};
   rebootSchedule.hour      = 3;
@@ -296,6 +343,7 @@ void ConfigStore::toJson(JsonDocument& doc) {
   general["logFileEnabled"]   = config.logFileEnabled;
   general["atBridgeEnabled"]  = config.atBridgeEnabled;
   general["thinModeEnabled"]  = config.thinModeEnabled;
+  general["wifiTxPower"]       = config.wifiTxPower;
   general["pushStrategy"]     = (int)config.pushStrategy;
   general["remark"]           = config.remark;
 
@@ -325,6 +373,16 @@ void ConfigStore::toJson(JsonDocument& doc) {
     bl.add(config.blacklist[i]);
   }
 
+  JsonArray modems = doc["modems"].to<JsonArray>();
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    JsonObject modem = modems.add<JsonObject>();
+    modem["enabled"] = config.modems[i].enabled;
+    modem["name"]    = config.modems[i].name;
+    modem["rxPin"]   = config.modems[i].rxPin;
+    modem["txPin"]   = config.modems[i].txPin;
+    modem["enPin"]   = config.modems[i].enPin;
+  }
+
   JsonObject reboot   = doc["reboot"].to<JsonObject>();
   reboot["enabled"]   = rebootSchedule.enabled;
   reboot["mode"]      = (int)rebootSchedule.mode;
@@ -344,6 +402,7 @@ void ConfigStore::fromJson(JsonDocument& doc) {
     config.logFileEnabled   = g["logFileEnabled"]   | config.logFileEnabled;
     config.atBridgeEnabled  = g["atBridgeEnabled"]  | config.atBridgeEnabled;
     config.thinModeEnabled  = g["thinModeEnabled"]  | config.thinModeEnabled;
+    config.wifiTxPower       = g["wifiTxPower"]       | config.wifiTxPower;
     config.pushStrategy     = (PushStrategy)(g["pushStrategy"] | (int)config.pushStrategy);
     if (g["remark"].is<const char*>()) {
       config.remark = String(g["remark"].as<const char*>()).substring(0, 64);
@@ -401,6 +460,19 @@ void ConfigStore::fromJson(JsonDocument& doc) {
       config.blacklist[count++] = v.as<String>();
     }
     config.blacklistCount = count;
+  }
+
+  if (doc["modems"].is<JsonArray>()) {
+    int i = 0;
+    for (JsonObject modem : doc["modems"].as<JsonArray>()) {
+      if (i >= MODEM_COUNT) break;
+      config.modems[i].enabled = modem["enabled"] | config.modems[i].enabled;
+      config.modems[i].name    = modem["name"]    | config.modems[i].name;
+      config.modems[i].rxPin   = modem["rxPin"]   | config.modems[i].rxPin;
+      config.modems[i].txPin   = modem["txPin"]   | config.modems[i].txPin;
+      config.modems[i].enPin   = modem["enPin"]   | config.modems[i].enPin;
+      i++;
+    }
   }
 
   if (doc["reboot"].is<JsonObject>()) {

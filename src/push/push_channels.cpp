@@ -309,11 +309,11 @@ bool PushChannels::sendWechatWork(const PushChannel& ch, const String& sender, c
   return isResponseSuccessful(session.get(), code);
 }
 
-bool PushChannels::sendSmsPush(const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp) {
+bool PushChannels::sendSmsPush(const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp, ModemId modemId) {
   String content = message.type == PUSH_BODY_CUSTOM ? message.content : ("[转发]发件人: " + sender + "\n内容: " + message.content);
   // Sms::sendPDU 内部自动处理长短信拆分，无需手动截断
   LOG("PUSHCH", "SMS备份推送到: %s", ch.url.c_str());
-  bool ok = Sms::sendPDU(ch.url.c_str(), content.c_str());
+  bool ok = Sms::sendPDU(modemId, ch.url.c_str(), content.c_str());
   if (!ok) LOG("PUSHCH", "SMS备份推送失败");
   return ok;
 }

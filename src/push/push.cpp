@@ -32,7 +32,7 @@ static String sanitizeText(const String& s) {
 
 // 内部辅助：按通道配置分发单次推送（不含跳过判断）
 // ctx 用于渲染 key1/key2 占位符
-static bool _sendOneChannel(const PushChannel& ch, const MessageContext& ctx, const String& sender, const String& message, const String& renderedBody, const String& timestamp) {
+static bool _sendOneChannel(const PushChannel& ch, const MessageContext& ctx, const String& sender, const String& message, const String& renderedBody, const String& timestamp, ModemId modemId) {
   // 在通道副本中渲染 key1/key2（不修改原通道配置）
   PushChannel rendered = ch;
   rendered.key1 = MsgContext::render(ch.key1, ctx);
@@ -59,7 +59,7 @@ static bool _sendOneChannel(const PushChannel& ch, const MessageContext& ctx, co
     case PUSH_TYPE_GOTIFY:      ok = PushChannels::sendGotify(rendered, sender, body, timestamp);       break;
     case PUSH_TYPE_TELEGRAM:    ok = PushChannels::sendTelegram(rendered, sender, body, timestamp);     break;
     case PUSH_TYPE_WECHAT_WORK: ok = PushChannels::sendWechatWork(rendered, sender, body, timestamp);   break;
-    case PUSH_TYPE_SMS:         ok = PushChannels::sendSmsPush(rendered, sender, body, timestamp);      break;
+    case PUSH_TYPE_SMS:         ok = PushChannels::sendSmsPush(rendered, sender, body, timestamp, modemId); break;
     default:
       LOG("PUSH", "未知推送类型: %d", (int)rendered.type);
       break;
@@ -86,17 +86,17 @@ static const char* pushTypeLabel(PushType t) {
   }
 }
 
-static MessageContext buildMsgContext(const String& sender, const String& message, const String& timestamp, const String& messageType) {
+static MessageContext buildMsgContext(const String& sender, const String& message, const String& timestamp, const String& messageType, ModemId modemId) {
   MessageContext ctx;
   ctx.from        = sender;
   ctx.message     = message;
   ctx.timestamp   = timestamp;
   ctx.date        = TimeSync::dateStr();
   ctx.deviceId    = WifiManager::deviceId();
-  ctx.carrier     = Sim::carrier();
-  ctx.to          = Sim::phoneNum();
-  ctx.simSlot     = "SIM1";
-  ctx.signal      = Sim::signal();
+  ctx.carrier     = Sim::carrier(modemId);
+  ctx.to          = Sim::phoneNum(modemId);
+  ctx.simSlot     = config.modems[modemId].name.length() > 0 ? config.modems[modemId].name : ("SIM" + String(modemId + 1));
+  ctx.signal      = Sim::signal(modemId);
   ctx.remark      = config.remark;
   ctx.uptime      = MsgContext::formatUptime(millis());
   ctx.deviceName  = WifiManager::deviceName();
@@ -105,7 +105,7 @@ static MessageContext buildMsgContext(const String& sender, const String& messag
 }
 
 // 单通道推送：含跳过判断、构建消息上下文，供重试队列调用
-bool Push::executeChannel(int channelIdx, const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType) {
+bool Push::executeChannel(int channelIdx, const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
   if (channelIdx < 0 || channelIdx >= config.pushCount) return false;
   const PushChannel& ch = config.pushChannels[channelIdx];
   if (!ConfigStore::isPushChannelValid(ch)) return false;
@@ -114,23 +114,27 @@ bool Push::executeChannel(int channelIdx, const String& sender, const String& me
   if (ch.type >= PUSH_TYPE_POST_JSON && ch.type <= PUSH_TYPE_WECHAT_WORK && !wifiOk) return false;
   if (ch.type == PUSH_TYPE_SMS && msgType.type == MSG_TYPE_SIM) return false;
 
-  MessageContext ctx = buildMsgContext(sender, message, timestamp, msgType.toString());
+  MessageContext ctx = buildMsgContext(sender, message, timestamp, msgType.toString(), modemId);
   ctx.channelName = ch.name;
   ctx.channelType    = pushTypeLabel(ch.type);
   String renderedBody = ch.customBody.length() > 0 ? MsgContext::render(ch.customBody, ctx) : "";
-  return _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp);
+  return _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp, modemId);
 }
 
-void Push::send(const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType) {
-  PushQueue::enqueue(sender, message, timestamp, msgType);
+static bool isToolboxTest(const String& sender) {
+  return sender == "[工具箱测试]";
 }
 
-void Push::executeChain(const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType) {
+void Push::send(const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
+  PushQueue::enqueue(sender, message, timestamp, msgType, modemId);
+}
+
+void Push::executeChain(const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
   // T015: 推送前检查本机号码是否就绪
   // 入队整条推送链，待号码就绪后重新完整执行，确保故障转移策略正确生效
-  if (!Sim::isNumberReady()) {
+  if (!Sim::isNumberReady(modemId) && !isToolboxTest(sender) && msgType.type != MSG_TYPE_SIM) {
     LOG("PUSH", "本机号码未知，完整推送链入队等待号码就绪");
-    PushRetry::enqueue(PUSH_RETRY_FULL_CHAIN, sender, message, timestamp, msgType, RetryReason::WAITING_NUMBER);
+    PushRetry::enqueue(PUSH_RETRY_FULL_CHAIN, sender, message, timestamp, msgType, RetryReason::WAITING_NUMBER, modemId);
     return;
   }
 
@@ -145,7 +149,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
   int  failoverRetryCount = 0;
   bool failoverChainDone  = false;  // true = 已有通道成功并 break
 
-  MessageContext ctx = buildMsgContext(sender, message, timestamp, msgType.toString());
+  MessageContext ctx = buildMsgContext(sender, message, timestamp, msgType.toString(), modemId);
 
   for (int i = 0; i < config.pushCount; i++) {
     const PushChannel& ch = config.pushChannels[i];
@@ -157,7 +161,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
       continue;
     }
 
-    if (ch.type == PUSH_TYPE_SMS && msgType.type == MSG_TYPE_SIM) {
+    if (ch.type == PUSH_TYPE_SMS && msgType.type == MSG_TYPE_SIM && !isToolboxTest(sender)) {
       LOG("PUSH", "SIM事件跳过SMS通道: %s", ch.name.c_str());
       continue;
     }
@@ -171,7 +175,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
     ctx.channelType    = pushTypeLabel(ch.type);
     String renderedBody = ch.customBody.length() > 0 ? MsgContext::render(ch.customBody, ctx) : "";
 
-    bool ok = _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp);
+    bool ok = _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp, modemId);
 
     if (config.pushStrategy == PUSH_STRATEGY_FAILOVER) {
       if (ok) {
@@ -188,7 +192,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
       // 广播模式：继续所有通道
       delay(100);
       if (!ok && ch.retryOnFail) {
-        PushRetry::enqueue(i, sender, message, timestamp, msgType);
+        PushRetry::enqueue(i, sender, message, timestamp, msgType, RetryReason::SEND_FAILED, modemId);
         LOG("PUSH", "[Retry] 通道 %s 失败，已加入重试队列", name.c_str());
       }
     }
@@ -197,7 +201,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
   // 故障转移模式：只有整链全部失败时才入队重试
   if (config.pushStrategy == PUSH_STRATEGY_FAILOVER && !failoverChainDone) {
     for (int j = 0; j < failoverRetryCount; j++) {
-      PushRetry::enqueue(failoverRetry[j], sender, message, timestamp, msgType);
+      PushRetry::enqueue(failoverRetry[j], sender, message, timestamp, msgType, RetryReason::SEND_FAILED, modemId);
       const String& rname = config.pushChannels[failoverRetry[j]].name;
       LOG("PUSH", "[Retry] 故障转移链全部失败，通道 %s 加入重试队列", rname.c_str());
     }

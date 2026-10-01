@@ -42,6 +42,20 @@ void statusController(AsyncWebServerRequest* request) {
   // 短信消费归属：瘦模式下本固件不消费入站短信，交由外部系统轮询取走。
   root["thinMode"]        = config.thinModeEnabled;
 
+  JsonArray modems = root["modems"].to<JsonArray>();
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    JsonObject modem = modems.add<JsonObject>();
+    modem["id"]        = i;
+    modem["enabled"]   = config.modems[i].enabled;
+    modem["name"]      = config.modems[i].name;
+    modem["state"]     = (int)Sim::state(i);
+    modem["stateLabel"] = simStateLabel(Sim::state(i));
+    modem["number"]    = Sim::phoneNum(i);
+    modem["carrier"]   = Sim::carrier(i);
+    modem["signal"]    = Sim::signal(i);
+    modem["reader"]    = SimDispatcher::running(i);
+  }
+
   resp->setLength();
   request->send(resp);
 }

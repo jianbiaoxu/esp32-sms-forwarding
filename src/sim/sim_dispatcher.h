@@ -3,6 +3,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include "../modem/modem_types.h"
 
 // ---------- Dispatcher 常量 ----------
 
@@ -73,7 +74,7 @@ enum class SimUrcType : uint8_t {
 };
 
 // URC 回调签名：dispatcher 在 Reader Task 上下文回调
-using SimUrcCallback = void (*)(SimUrcType type, const String& line);
+using SimUrcCallback = void (*)(ModemId modemId, SimUrcType type, const String& line);
 
 // SimDispatcher：纯通讯层。
 // 职责：
@@ -85,13 +86,18 @@ using SimUrcCallback = void (*)(SimUrcType type, const String& line);
 class SimDispatcher {
 public:
   // 注册 URC 回调；必须在 start() 之前调用。当前仅支持单回调。
-  static void   registerUrcCallback(SimUrcCallback cb);
+  static void   registerUrcCallback(ModemId modemId, SimUrcCallback cb);
+  static void   registerUrcCallback(SimUrcCallback cb) { registerUrcCallback(MODEM_PRIMARY, cb); }
 
   // 创建队列 + 启动 Reader Task；应在 Sim::init() 成功后调用一次。
-  static void   start();
+  static void   start(ModemId modemId);
+  static void   start() { start(MODEM_PRIMARY); }
 
   // start() 是否已成功执行（队列与任务均已就绪）。
-  static bool   running();
+  static bool   running(ModemId modemId);
+  static bool   running() { return running(MODEM_PRIMARY); }
+
+  static HardwareSerial& serial(ModemId modemId);
 
   // 发送 AT 命令并等待响应。线程安全（队列 + 二值信号量）。
   // 返回 true 表示 OK；false 表示 ERROR/超时/队列满。start() 之前调用必失败。
@@ -99,9 +105,14 @@ public:
   // - prio：true 时插入队头，用于关键控制命令
   // respCap:响应缓冲容量,默认 SIM_RESP_BUF_SIZE。需要容纳全量短信列举等大响应
   // 时传 SIM_RESP_LARGE_BUF_SIZE;截断会破坏整个转录,因此宁可多分配也不要截断。
-  static bool   sendCommand(const char* cmd, unsigned long timeoutMs,
+  static bool   sendCommand(ModemId modemId, const char* cmd, unsigned long timeoutMs,
                             String* outResp = nullptr, bool prio = false,
                             size_t respCap = SIM_RESP_BUF_SIZE);
+  static bool   sendCommand(const char* cmd, unsigned long timeoutMs,
+                            String* outResp = nullptr, bool prio = false,
+                            size_t respCap = SIM_RESP_BUF_SIZE) {
+    return sendCommand(MODEM_PRIMARY, cmd, timeoutMs, outResp, prio, respCap);
+  }
 
   // 在 reader 暂停期间,把裸读到的一行交给 URC 识别与路由;是主动上报则返回 true,
   // 调用方不应把它计入命令响应。
@@ -113,10 +124,13 @@ public:
   // 安全前提:回调在调用方(async_tcp)上下文执行,因此所有 URC handler 都不得发送
   // AT 命令 —— reader 正停着,sendCommand 会永久阻塞。现有 handler 均只置标志位或
   // 入队(来电的 AT+CLCC 是延迟到 tick 里发的),满足该前提。新增 handler 必须保持。
-  static bool   routeIfUrc(const String& line);
+  static bool   routeIfUrc(ModemId modemId, const String& line);
+  static bool   routeIfUrc(const String& line) { return routeIfUrc(MODEM_PRIMARY, line); }
 
   // 暂停 Reader Task，调用方可直接 Serial1.read/write（必须配对 resumeReader）。
   // 返回 false 表示在 timeoutMs 内未能确认 Reader Task 让出 UART。
-  static bool   pauseReader(unsigned long timeoutMs = 10000);
-  static void   resumeReader();
+  static bool   pauseReader(ModemId modemId, unsigned long timeoutMs = 10000);
+  static bool   pauseReader(unsigned long timeoutMs = 10000) { return pauseReader(MODEM_PRIMARY, timeoutMs); }
+  static void   resumeReader(ModemId modemId);
+  static void   resumeReader() { resumeReader(MODEM_PRIMARY); }
 };

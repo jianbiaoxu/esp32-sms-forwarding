@@ -3,6 +3,7 @@
 #include <time.h>
 
 void sendSmsController(AsyncWebServerRequest* request);
+void testPushController(AsyncWebServerRequest* request);
 void pingController(AsyncWebServerRequest* request);
 void queryController(AsyncWebServerRequest* request);
 void flightModeController(AsyncWebServerRequest* request);

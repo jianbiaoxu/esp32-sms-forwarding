@@ -22,12 +22,12 @@ void PushRetry::init() {
 }
 
 void PushRetry::enqueue(int channelIndex, const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType) {
-  PushRetry::enqueue(channelIndex, sender, message, timestamp, msgType, RetryReason::SEND_FAILED);
+                      const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
+  PushRetry::enqueue(channelIndex, sender, message, timestamp, msgType, RetryReason::SEND_FAILED, modemId);
 }
 
 void PushRetry::enqueue(int channelIndex, const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType, RetryReason reason) {
+                      const String& timestamp, const MsgTypeInfo& msgType, RetryReason reason, ModemId modemId) {
   if (s_retryQueue.size() >= PUSH_RETRY_QUEUE_MAX) {
     LOG("RETRY", "重试队列已满（%d 条），丢弃最旧条目", PUSH_RETRY_QUEUE_MAX);
     s_retryQueue.pop();
@@ -38,6 +38,7 @@ void PushRetry::enqueue(int channelIndex, const String& sender, const String& me
   entry.task.message       = message;
   entry.task.timestamp     = timestamp;
   entry.task.msgType       = msgType;
+  entry.task.modemId       = modemId;
   entry.task.reason        = reason;
   entry.task.enqueueMs     = millis();
   entry.nextRetryMs        = millis() + PUSH_RETRY_INTERVAL_MS;
@@ -54,24 +55,24 @@ void PushRetry::tick() {
     if (millis() - t.enqueueMs > WAITING_NUMBER_TIMEOUT_MS) {
       LOG("RETRY", "等待超时，强制发送，通道索引 %d", t.channelIndex);
       if (t.channelIndex == PUSH_RETRY_FULL_CHAIN) {
-          Push::executeChain(t.sender, t.message, t.timestamp, t.msgType);
+          Push::executeChain(t.sender, t.message, t.timestamp, t.msgType, t.modemId);
       } else {
         String forceSender = t.sender + " [接收者未知]";
-        Push::executeChannel(t.channelIndex, forceSender, t.message, t.timestamp, t.msgType);
+        Push::executeChannel(t.channelIndex, forceSender, t.message, t.timestamp, t.msgType, t.modemId);
       }
       s_retryQueue.pop();
       return;
     }
     // 号码已就绪：立即发出
-    if (Sim::isNumberReady()) {
+    if (Sim::isNumberReady(t.modemId)) {
       if (t.channelIndex == PUSH_RETRY_FULL_CHAIN) {
         LOG("RETRY", "号码就绪，重新执行完整推送链");
-          Push::executeChain(t.sender, t.message, t.timestamp, t.msgType);
+          Push::executeChain(t.sender, t.message, t.timestamp, t.msgType, t.modemId);
         s_retryQueue.pop();
         return;
       }
       LOG("RETRY", "号码就绪，立即发送，通道索引 %d", t.channelIndex);
-      bool ok = Push::executeChannel(t.channelIndex, t.sender, t.message, t.timestamp, t.msgType);
+      bool ok = Push::executeChannel(t.channelIndex, t.sender, t.message, t.timestamp, t.msgType, t.modemId);
       if (ok) {
         LOG("RETRY", "号码就绪发送成功，通道索引 %d，出队", t.channelIndex);
       } else {
@@ -93,7 +94,7 @@ void PushRetry::tick() {
 
   // RetryReason::SEND_FAILED — 保持原有逻辑
   if (millis() < front.nextRetryMs) return;
-  bool ok = Push::executeChannel(t.channelIndex, t.sender, t.message, t.timestamp, t.msgType);
+  bool ok = Push::executeChannel(t.channelIndex, t.sender, t.message, t.timestamp, t.msgType, t.modemId);
   if (ok) {
     LOG("RETRY", "重试成功，通道索引 %d，出队", t.channelIndex);
     s_retryQueue.pop();

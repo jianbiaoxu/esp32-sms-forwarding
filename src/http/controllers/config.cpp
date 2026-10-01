@@ -21,6 +21,7 @@ void configController(AsyncWebServerRequest* request) {
   root["logFileEnabled"]   = config.logFileEnabled;
   root["atBridgeEnabled"]  = config.atBridgeEnabled;
   root["thinModeEnabled"]  = config.thinModeEnabled;
+  root["wifiTxPower"]       = config.wifiTxPower;
 
   root["pushStrategy"] = (int)config.pushStrategy;
   root["pushCount"]    = config.pushCount;
@@ -50,6 +51,18 @@ void configController(AsyncWebServerRequest* request) {
     JsonObject we = wifiArr.add<JsonObject>();
     we["ssid"]     = config.wifiList[i].ssid;
     we["password"] = "";  // 安全起见，密码不回显
+  }
+
+  JsonArray modems = root["modems"].to<JsonArray>();
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    JsonObject modem = modems.add<JsonObject>();
+    modem["id"]      = i;
+    modem["enabled"] = config.modems[i].enabled;
+    modem["name"]    = config.modems[i].name;
+    modem["uart"]    = i == 0 ? "UART1" : "UART0";
+    modem["rxPin"]   = config.modems[i].rxPin;
+    modem["txPin"]   = config.modems[i].txPin;
+    modem["enPin"]   = config.modems[i].enPin;
   }
 
   resp->setLength();
@@ -159,6 +172,7 @@ void configImportController(AsyncWebServerRequest* request, uint8_t* data,
   bool hasRecognized = doc["general"].is<JsonObject>()
                     || doc["wifi"].is<JsonObject>()
                     || doc["wifiList"].is<JsonArray>()
+                    || doc["modems"].is<JsonArray>()
                     || doc["pushChannels"].is<JsonArray>()
                     || doc["blacklist"].is<JsonArray>()
                     || doc["reboot"].is<JsonObject>();

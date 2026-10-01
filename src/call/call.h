@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "../modem/modem_types.h"
 
 // 来电事件处理器。
 // 线程说明：handleRING/handleCLIP 在 SIM reader 任务上运行；tick() 在 loop() 上运行。
@@ -25,29 +26,31 @@ public:
   static void init();
 
   // SIM reader 任务检测到 RING URC 时调用。
-  static void handleRING();
+  static void handleRING(ModemId modemId);
+  static void handleRING() { handleRING(MODEM_PRIMARY); }
 
   // SIM reader 任务检测到 +CLIP URC 时调用。
-  static void handleCLIP(const String& line);
+  static void handleCLIP(ModemId modemId, const String& line);
 
   // SIM reader 任务检测到未经请求的 +CLCC URC 时调用。
-  static void handleCLCC(const String& line);
+  static void handleCLCC(ModemId modemId, const String& line);
 
   // SIM reader 任务检测到通话结束上报时调用。
-  static void handleCallEnd(const String& line);
+  static void handleCallEnd(ModemId modemId, const String& line);
 
   // 每轮 loop() 调用：处理 CLIP 超时、推送派发、AT+CLCC 底代查询。
-  static void tick();
+  static void tick(ModemId modemId);
+  static void tick() { tick(MODEM_PRIMARY); }
 
 private:
-  static volatile bool          s_pending;            // 是否有未推送的来电
-  static volatile bool          s_dispatchPending;    // 是否该立即派发推送
-  static String                 s_callerNumber;       // CLIP / CLCC 解析出的来电号码
-  static volatile unsigned long s_clipWaitUntilMs;    // CLIP 等待超时截止点
-  static unsigned long          s_lastNotifyMs;       // 上次推送时刻（去重用）
-  static bool                   s_clccAttempted;      // 本轮是否已发起 AT+CLCC
-  static unsigned long          s_clccAttemptMs;      // AT+CLCC 发起时刻
+  static volatile bool          s_pending[MODEM_COUNT];
+  static volatile bool          s_dispatchPending[MODEM_COUNT];
+  static String                 s_callerNumber[MODEM_COUNT];
+  static volatile unsigned long s_clipWaitUntilMs[MODEM_COUNT];
+  static unsigned long          s_lastNotifyMs[MODEM_COUNT];
+  static bool                   s_clccAttempted[MODEM_COUNT];
+  static unsigned long          s_clccAttemptMs[MODEM_COUNT];
 
-  static void   dispatch(const String& callerNum);    // 实际执行推送、并更新去重状态
+  static void   dispatch(ModemId modemId, const String& callerNum);
   static String parseCLCC(const String& resp);        // 从 +CLCC 响应中提取主叫号
 };

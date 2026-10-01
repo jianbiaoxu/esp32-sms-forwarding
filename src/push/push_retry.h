@@ -27,6 +27,7 @@ struct PushRetryTask {
   String        message;
   String        timestamp;
   MsgTypeInfo   msgType;
+  ModemId       modemId    = MODEM_PRIMARY;
   RetryReason   reason    = RetryReason::SEND_FAILED;
   unsigned long enqueueMs = 0;    // 入队时间，用于过期 / 节流
 };
@@ -39,11 +40,13 @@ public:
 
   // 入队失败任务（默认 reason = SEND_FAILED）
   static void enqueue(int channelIndex, const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType);
+                      const String& timestamp, const MsgTypeInfo& msgType,
+                      ModemId modemId = MODEM_PRIMARY);
 
   // 入队任务（指定原因，例如 WAITING_NUMBER）
   static void enqueue(int channelIndex, const String& sender, const String& message,
-                      const String& timestamp, const MsgTypeInfo& msgType, RetryReason reason);
+                      const String& timestamp, const MsgTypeInfo& msgType, RetryReason reason,
+                      ModemId modemId = MODEM_PRIMARY);
 
   // loop 周期调用：按 PUSH_RETRY_INTERVAL_MS 节流处理队列。
   static void tick();

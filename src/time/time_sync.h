@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "../modem/modem_types.h"
 
 // 时间同步模块：双源（SIM NITZ + NTP）。
 // - 优先 NITZ（运营商下发，精度足够，无需联网）
@@ -11,7 +12,8 @@ public:
   static void init();
 
   // SIM 就绪后调用：通过 AT+CCLK? 获取 NITZ 时间并写入系统时钟。
-  static void syncFromSIM();
+  static void syncFromSIM(ModemId modemId);
+  static void syncFromSIM() { syncFromSIM(MODEM_PRIMARY); }
 
   // WiFi 就绪后调用：启动 NTP 同步。
   static void syncNTP();

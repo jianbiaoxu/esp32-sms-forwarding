@@ -17,13 +17,14 @@ enum class SmsItemKind : uint8_t { PDU = 0, USSD = 1 };
 
 struct PduQueueItem {
     SmsItemKind kind;
+    ModemId     modemId;
     char        data[PDU_MAX_LEN + 1];
 };
 
 static QueueHandle_t s_pduQueue = nullptr;
 
 static PDU pdu = PDU(4096);
-static ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];
+static ConcatSms concatBuffer[MODEM_COUNT][MAX_CONCAT_MESSAGES];
 
 // ---------- helpers ----------
 
@@ -36,11 +37,11 @@ static bool isAdmin(const char* sender) {
   return s.equals(a);
 }
 
-static String assembleConcatSms(int slot) {
+static String assembleConcatSms(ModemId modemId, int slot) {
   String result;
-  for (int i = 0; i < concatBuffer[slot].totalParts; i++) {
-    if (concatBuffer[slot].parts[i].valid) {
-      result += concatBuffer[slot].parts[i].text;
+  for (int i = 0; i < concatBuffer[modemId][slot].totalParts; i++) {
+    if (concatBuffer[modemId][slot].parts[i].valid) {
+      result += concatBuffer[modemId][slot].parts[i].text;
     } else {
       result += "[缺失分段" + String(i + 1) + "]";
     }
@@ -48,68 +49,68 @@ static String assembleConcatSms(int slot) {
   return result;
 }
 
-static void clearConcatSlot(int slot) {
-  concatBuffer[slot].inUse         = false;
-  concatBuffer[slot].receivedParts = 0;
-  concatBuffer[slot].sender        = "";
-  concatBuffer[slot].timestamp     = "";
+static void clearConcatSlot(ModemId modemId, int slot) {
+  concatBuffer[modemId][slot].inUse         = false;
+  concatBuffer[modemId][slot].receivedParts = 0;
+  concatBuffer[modemId][slot].sender        = "";
+  concatBuffer[modemId][slot].timestamp     = "";
   for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
-    concatBuffer[slot].parts[j].valid = false;
-    concatBuffer[slot].parts[j].text  = "";
+    concatBuffer[modemId][slot].parts[j].valid = false;
+    concatBuffer[modemId][slot].parts[j].text  = "";
   }
 }
 
-static int findOrCreateConcatSlot(int refNumber, const char* sender, int totalParts) {
+static int findOrCreateConcatSlot(ModemId modemId, int refNumber, const char* sender, int totalParts) {
   // 匹配已有槽位：refNumber + sender + totalParts 三者相同才视为同一条长短信
   // 加入 totalParts 可区分同一发送者、相同参考号但总段数不同的并发长短信
   for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
-    if (concatBuffer[i].inUse &&
-        concatBuffer[i].refNumber == refNumber &&
-        concatBuffer[i].totalParts == totalParts &&
-        concatBuffer[i].sender.equals(sender)) {
+    if (concatBuffer[modemId][i].inUse &&
+        concatBuffer[modemId][i].refNumber == refNumber &&
+        concatBuffer[modemId][i].totalParts == totalParts &&
+        concatBuffer[modemId][i].sender.equals(sender)) {
       return i;
     }
   }
   for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
-    if (!concatBuffer[i].inUse) {
-      concatBuffer[i].inUse         = true;
-      concatBuffer[i].refNumber     = refNumber;
-      concatBuffer[i].sender        = String(sender);
-      concatBuffer[i].totalParts    = totalParts;
-      concatBuffer[i].receivedParts = 0;
-      concatBuffer[i].firstPartTime = millis();
+    if (!concatBuffer[modemId][i].inUse) {
+      concatBuffer[modemId][i].inUse         = true;
+      concatBuffer[modemId][i].refNumber     = refNumber;
+      concatBuffer[modemId][i].sender        = String(sender);
+      concatBuffer[modemId][i].totalParts    = totalParts;
+      concatBuffer[modemId][i].receivedParts = 0;
+      concatBuffer[modemId][i].firstPartTime = millis();
       for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
-        concatBuffer[i].parts[j].valid = false;
-        concatBuffer[i].parts[j].text  = "";
+        concatBuffer[modemId][i].parts[j].valid = false;
+        concatBuffer[modemId][i].parts[j].text  = "";
       }
       return i;
     }
   }
   // 找最老的槽位覆盖
   int oldestSlot = 0;
-  unsigned long oldestTime = concatBuffer[0].firstPartTime;
+  unsigned long oldestTime = concatBuffer[modemId][0].firstPartTime;
   for (int i = 1; i < MAX_CONCAT_MESSAGES; i++) {
-    if (concatBuffer[i].firstPartTime < oldestTime) {
-      oldestTime = concatBuffer[i].firstPartTime;
+    if (concatBuffer[modemId][i].firstPartTime < oldestTime) {
+      oldestTime = concatBuffer[modemId][i].firstPartTime;
       oldestSlot = i;
     }
   }
   LOG("SMS", "长短信缓存已满，覆盖最老的槽位");
-  concatBuffer[oldestSlot].inUse         = true;
-  concatBuffer[oldestSlot].refNumber     = refNumber;
-  concatBuffer[oldestSlot].sender        = String(sender);
-  concatBuffer[oldestSlot].totalParts    = totalParts;
-  concatBuffer[oldestSlot].receivedParts = 0;
-  concatBuffer[oldestSlot].firstPartTime = millis();
+  concatBuffer[modemId][oldestSlot].inUse         = true;
+  concatBuffer[modemId][oldestSlot].refNumber     = refNumber;
+  concatBuffer[modemId][oldestSlot].sender        = String(sender);
+  concatBuffer[modemId][oldestSlot].totalParts    = totalParts;
+  concatBuffer[modemId][oldestSlot].receivedParts = 0;
+  concatBuffer[modemId][oldestSlot].firstPartTime = millis();
   for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
-    concatBuffer[oldestSlot].parts[j].valid = false;
-    concatBuffer[oldestSlot].parts[j].text  = "";
+    concatBuffer[modemId][oldestSlot].parts[j].valid = false;
+    concatBuffer[modemId][oldestSlot].parts[j].text  = "";
   }
   return oldestSlot;
 }
 
 // forward declaration
-static void processSmsContent(const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType);
+static void processSmsContent(ModemId modemId, const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType);
 
 // 过滤 pdulib 可能遗留的 UCS-2 对齐填充字节等控制字符（0x00-0x1F，保留 \t \n \r）
 // 根因：带空 UDH（UDHL=0）的 SMS 在 UCS-2 内容前需 1 字节对齐，部分运营商填充 0x01（非标）
@@ -163,7 +164,7 @@ static int ucs2ByteLen(const char* s, int maxUcs2) {
 }
 
 // 发送单条 PDU（可携带长短信参数，csms/numParts/partNum 全为 0 表示普通短信）
-static bool sendOnePDU(const char* phoneNumber, const char* message, unsigned short csms, unsigned char numParts, unsigned char partNum) {
+static bool sendOnePDU(ModemId modemId, const char* phoneNumber, const char* message, unsigned short csms, unsigned char numParts, unsigned char partNum) {
   pdu.setSCAnumber();
   int pduLen = pdu.encodePDU(phoneNumber, message, csms, numParts, partNum);
   if (pduLen < 0) {
@@ -177,19 +178,20 @@ static bool sendOnePDU(const char* phoneNumber, const char* message, unsigned sh
   LOG("SMS", "PDU长度=%d，PDU前16字符: %.16s", pduLen, pdu.getSMS());
 
   String cmgsCmd = "AT+CMGS="; cmgsCmd += pduLen;
-  if (!SimDispatcher::pauseReader()) {
+  if (!SimDispatcher::pauseReader(modemId)) {
     LOG("SMS", "无法暂停 SIM reader，取消发送");
     return false;
   }
-  while (Serial1.available()) Serial1.read();
-  Serial1.println(cmgsCmd);
+  HardwareSerial& serial = SimDispatcher::serial(modemId);
+  while (serial.available()) serial.read();
+  serial.println(cmgsCmd);
 
   unsigned long start = millis();
   bool gotPrompt = false;
   while (millis() - start < 5000) {
     esp_task_wdt_reset();
-    if (Serial1.available()) {
-      char c = Serial1.read();
+    if (serial.available()) {
+      char c = serial.read();
       if (c == '>') { gotPrompt = true; break; }
     } else {
       // 让出 CPU：此回调运行在 async_tcp 任务上下文，纯自旋忙等会导致该任务
@@ -198,13 +200,13 @@ static bool sendOnePDU(const char* phoneNumber, const char* message, unsigned sh
     }
   }
   if (!gotPrompt) {
-    SimDispatcher::resumeReader();
+    SimDispatcher::resumeReader(modemId);
     LOG("SMS", "未收到>提示符");
     return false;
   }
 
   // getSMS() 末尾已含 CTRL+Z (0x1A)，直接发送，无需再追加
-  Serial1.print(pdu.getSMS());
+  serial.print(pdu.getSMS());
 
   start = millis();
   String resp;
@@ -213,39 +215,39 @@ static bool sendOnePDU(const char* phoneNumber, const char* message, unsigned sh
 
   while (millis() - start < 30000) {
     esp_task_wdt_reset();
-    while (Serial1.available()) {
-      char c = Serial1.read(); resp += c;
+    while (serial.available()) {
+      char c = serial.read(); resp += c;
       if (!cmgsSeen && resp.indexOf("+CMGS:") >= 0) {
         cmgsSeen    = true;
         cmgsSeenAt  = millis();
       }
       // OK 是事务完成的最终标志
       if (resp.indexOf("OK") >= 0) {
-        SimDispatcher::resumeReader();
+        SimDispatcher::resumeReader(modemId);
         LOG("SMS", "短信发送成功");
         return true;
       }
       // 没有 +CMGS: 就出现 ERROR，才是真正失败
       if (!cmgsSeen && resp.indexOf("ERROR") >= 0) {
-        SimDispatcher::resumeReader();
+        SimDispatcher::resumeReader(modemId);
         LOG("SMS", "短信发送失败，响应: %s", resp.c_str());
         return false;
       }
     }
     // +CMGS: 已确认但 2s 内没收到 OK（modem 已入队）→ 视为成功
     if (cmgsSeen && millis() - cmgsSeenAt >= 2000) {
-      SimDispatcher::resumeReader();
+      SimDispatcher::resumeReader(modemId);
       LOG("SMS", "短信发送成功（+CMGS已确认）");
       return true;
     }
     delay(5);
   }
-  SimDispatcher::resumeReader();
+  SimDispatcher::resumeReader(modemId);
   LOG("SMS", "短信发送超时，已收到: %s", resp.c_str());
   return false;
 }
 
-bool Sms::sendPDU(const char* phoneNumber, const char* message) {
+bool Sms::sendPDU(ModemId modemId, const char* phoneNumber, const char* message) {
   LOG("SMS", "准备发送短信到 %s", phoneNumber);
 
   bool ucs2      = hasMultibyte(message);
@@ -256,7 +258,7 @@ bool Sms::sendPDU(const char* phoneNumber, const char* message) {
   int partMax    = ucs2 ? 66  : 152;
 
   if (totalChars <= singleMax) {
-    bool ok = sendOnePDU(phoneNumber, message, 0, 0, 0);
+    bool ok = sendOnePDU(modemId, phoneNumber, message, 0, 0, 0);
     return ok;
   }
 
@@ -273,7 +275,7 @@ bool Sms::sendPDU(const char* phoneNumber, const char* message) {
     int byteLen = ucs2ByteLen(ptr, partMax);
     String chunk = String(ptr).substring(0, byteLen);
     LOG("SMS", "发送第 %d/%d 段", part, numParts);
-    if (!sendOnePDU(phoneNumber, chunk.c_str(), ref, (uint8_t)numParts, (uint8_t)part)) {
+    if (!sendOnePDU(modemId, phoneNumber, chunk.c_str(), ref, (uint8_t)numParts, (uint8_t)part)) {
       LOG("SMS", "第 %d 段发送失败，中止", part);
       return false;
     }
@@ -283,9 +285,9 @@ bool Sms::sendPDU(const char* phoneNumber, const char* message) {
 }
 
 // forward declaration
-static void processSmsContent(const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType);
+static void processSmsContent(ModemId modemId, const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType);
 
-static void processAdminCommand(const char* sender, const char* text) {
+static void processAdminCommand(ModemId modemId, const char* sender, const char* text) {
   String cmd = String(text); cmd.trim();
   LOG("SMS", "处理管理员命令: %s", cmd.c_str());
 
@@ -295,7 +297,7 @@ static void processAdminCommand(const char* sender, const char* text) {
     if (sc > fc + 1) {
       String targetPhone = cmd.substring(fc + 1, sc); targetPhone.trim();
       String smsContent  = cmd.substring(sc + 1);     smsContent.trim();
-      bool ok = Sms::sendPDU(targetPhone.c_str(), smsContent.c_str());
+      bool ok = Sms::sendPDU(modemId, targetPhone.c_str(), smsContent.c_str());
       String subject = ok ? "短信发送成功" : "短信发送失败";
       String body = "命令: " + cmd + "\n目标号码: " + targetPhone + "\n结果: " + (ok ? "成功" : "失败");
       LOG("SMS", "%s: %s", subject.c_str(), body.c_str());
@@ -668,7 +670,7 @@ static bool extractRawUd8bit(const String& hexPdu, uint8_t* udBuf, int& udLen, u
 }
 
 // 处理 8-bit 编码的 SMS（WAP Push / 应用端口短信 / 其他数据消息）
-static void handleRawDataSms(const String& hexPdu, int dcs, const char* sender, const char* timestamp) {
+static void handleRawDataSms(ModemId modemId, const String& hexPdu, int dcs, const char* sender, const char* timestamp) {
   String classInfo;
   if (((dcs & 0xF0) == 0xF0 || ((dcs & 0xC0) == 0x00 && (dcs & 0x10))) && (dcs & 0x03) == 0)
     classInfo = "Class 0（即显短信）";
@@ -680,7 +682,7 @@ static void handleRawDataSms(const String& hexPdu, int dcs, const char* sender, 
   if (!extractRawUd8bit(hexPdu, udBuf, udLen, destPort)) {
     LOG("SMS", "8-bit PDU 手动解析失败 (DCS=0x%02X)", dcs);
     String label = classInfo.length() > 0 ? (classInfo + "·数据消息") : "数据消息";
-    processSmsContent(sender, "【内容无法解析】", timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
+    processSmsContent(modemId, sender, "【内容无法解析】", timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
     return;
   }
 
@@ -690,24 +692,24 @@ static void handleRawDataSms(const String& hexPdu, int dcs, const char* sender, 
     parseWspMessage(udBuf, udLen, wapLabel, wapContent);
     String label = classInfo.length() > 0 ? (wapLabel + "（" + classInfo + "）") : wapLabel;
     LOG("SMS", "WAP Push 端口=%u 类型=%s", destPort, label.c_str());
-    processSmsContent(sender, wapContent.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
+    processSmsContent(modemId, sender, wapContent.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
   } else if (destPort != 0) {
     char buf[48]; snprintf(buf, sizeof(buf), "应用端口消息（端口=%u）", destPort);
     String label = classInfo.length() > 0 ? (classInfo + "·" + String(buf)) : String(buf);
     String content = wspScanStrings(udBuf, udLen);
     if (content.length() == 0) content = "【二进制内容，无法显示】";
     LOG("SMS", "应用端口短信 端口=%u DCS=0x%02X", destPort, dcs);
-    processSmsContent(sender, content.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
+    processSmsContent(modemId, sender, content.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
   } else {
     String label = classInfo.length() > 0 ? (classInfo + "·8-bit数据") : "8-bit数据消息";
     String content = wspScanStrings(udBuf, udLen);
     if (content.length() == 0) content = "【二进制内容，无法显示】";
     LOG("SMS", "8-bit 数据消息（无端口）DCS=0x%02X", dcs);
-    processSmsContent(sender, content.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
+    processSmsContent(modemId, sender, content.c_str(), timestamp, MsgTypeInfo(MSG_TYPE_SMS, label));
   }
 }
 
-static void processSmsContent(const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType) {
+static void processSmsContent(ModemId modemId, const char* sender, const char* text, const char* timestamp, const MsgTypeInfo& msgType) {
   LOG("SMS", "=== 处理短信内容 ===");
   LOG("SMS", "发送者: %s", sender);
   LOG("SMS", "时间戳: %s", timestamp);
@@ -722,12 +724,12 @@ static void processSmsContent(const char* sender, const char* text, const char* 
   if (isAdmin(sender)) {
     String smsText = String(text); smsText.trim();
     if (smsText.startsWith("SMS:") || smsText.equals("RESET")) {
-      processAdminCommand(sender, text);
+      processAdminCommand(modemId, sender, text);
       return;
     }
   }
 
-  Push::send(String(sender), String(text), String(timestamp), msgType);
+  Push::send(String(sender), String(text), String(timestamp), msgType, modemId);
 }
 
 static bool isHexString(const String& str) {
@@ -740,7 +742,7 @@ static bool isHexString(const String& str) {
   return true;
 }
 
-static void processPduLine(const String& line) {
+static void processPduLine(ModemId modemId, const String& line) {
   if (!isHexString(line)) {
     LOG("SMS", "收到非PDU数据，忽略");
     return;
@@ -762,7 +764,7 @@ static void processPduLine(const String& line) {
   // 8-bit data encoding → WAP Push / 应用端口短信 / 其他数据消息
   // pdulib 对 8-bit 载荷无法正确解码，绕过文本解码路径单独处理
   if ((pdu.getDCS() & DCS_ALPHABET_MASK) == DCS_8BIT_ALPHABET_MASK) {
-    handleRawDataSms(line, pdu.getDCS(), pdu.getSender(), pdu.getTimeStamp());
+    handleRawDataSms(modemId, line, pdu.getDCS(), pdu.getSender(), pdu.getTimeStamp());
     return;
   }
 
@@ -779,55 +781,57 @@ static void processPduLine(const String& line) {
       return;
     }
     LOG("SMS", "收到长短信分段 %d/%d", partNumber, totalParts);
-    int slot = findOrCreateConcatSlot(refNumber, pdu.getSender(), totalParts);
+    int slot = findOrCreateConcatSlot(modemId, refNumber, pdu.getSender(), totalParts);
     int partIndex = partNumber - 1;
     if (partIndex >= 0 && partIndex < MAX_CONCAT_PARTS) {
-      if (!concatBuffer[slot].parts[partIndex].valid) {
-        concatBuffer[slot].parts[partIndex].valid = true;
-        concatBuffer[slot].parts[partIndex].text  = sanitizeSmsText(pdu.getText());
-        concatBuffer[slot].receivedParts++;
-        if (concatBuffer[slot].receivedParts == 1) {
-          concatBuffer[slot].timestamp = String(pdu.getTimeStamp());
+      if (!concatBuffer[modemId][slot].parts[partIndex].valid) {
+        concatBuffer[modemId][slot].parts[partIndex].valid = true;
+        concatBuffer[modemId][slot].parts[partIndex].text  = sanitizeSmsText(pdu.getText());
+        concatBuffer[modemId][slot].receivedParts++;
+        if (concatBuffer[modemId][slot].receivedParts == 1) {
+          concatBuffer[modemId][slot].timestamp = String(pdu.getTimeStamp());
         }
-        LOG("SMS", "已缓存分段 %d，当前已收到 %d/%d", partNumber, concatBuffer[slot].receivedParts, totalParts);
+        LOG("SMS", "SIM%u已缓存分段 %d，当前已收到 %d/%d", modemId + 1, partNumber, concatBuffer[modemId][slot].receivedParts, totalParts);
       } else {
         LOG("SMS", "分段 %d 已存在，跳过", partNumber);
       }
     }
-    if (concatBuffer[slot].receivedParts >= totalParts) {
+    if (concatBuffer[modemId][slot].receivedParts >= totalParts) {
       LOG("SMS", "长短信已收齐，开始合并转发");
-      String fullText = assembleConcatSms(slot);
-      processSmsContent(concatBuffer[slot].sender.c_str(),
+      String fullText = assembleConcatSms(modemId, slot);
+      processSmsContent(modemId, concatBuffer[modemId][slot].sender.c_str(),
                         fullText.c_str(),
-                        concatBuffer[slot].timestamp.c_str(),
+                        concatBuffer[modemId][slot].timestamp.c_str(),
                         MsgTypeInfo(MSG_TYPE_SMS, classLabel));
-      clearConcatSlot(slot);
+      clearConcatSlot(modemId, slot);
     }
   } else {
     String smsText = sanitizeSmsText(pdu.getText());
-    processSmsContent(pdu.getSender(), smsText.c_str(), pdu.getTimeStamp(), MsgTypeInfo(MSG_TYPE_SMS, classLabel));
+    processSmsContent(modemId, pdu.getSender(), smsText.c_str(), pdu.getTimeStamp(), MsgTypeInfo(MSG_TYPE_SMS, classLabel));
   }
 }
 
 // ---------- public API ----------
 
 void Sms::initConcatBuffer() {
-  for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
-    concatBuffer[i].inUse         = false;
-    concatBuffer[i].receivedParts = 0;
-    for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
-      concatBuffer[i].parts[j].valid = false;
-      concatBuffer[i].parts[j].text  = "";
+  for (ModemId modemId = 0; modemId < MODEM_COUNT; modemId++) {
+    for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
+      concatBuffer[modemId][i].inUse         = false;
+      concatBuffer[modemId][i].receivedParts = 0;
+      for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
+        concatBuffer[modemId][i].parts[j].valid = false;
+        concatBuffer[modemId][i].parts[j].text  = "";
+      }
     }
   }
 }
 
-void Sms::handleCMTHeader() {
-  LOG("SMS", "检测到+CMT，等待PDU数据...");
+void Sms::handleCMTHeader(ModemId modemId) {
+  LOG("SMS", "SIM%u检测到+CMT，等待PDU数据...", modemId + 1);
 }
 
 // 解析并推送 USSD 消息（在 sms_proc 任务上下文执行，不可在 reader task 调用）。
-static void processUssdLine(const String& line) {
+static void processUssdLine(ModemId modemId, const String& line) {
   LOG("SMS", "处理 USSD 消息: %s", line.c_str());
 
   // 格式: +CUSD: <n>,"<str>",<dcs>  或  +CUSD: <n>
@@ -910,13 +914,13 @@ static void processUssdLine(const String& line) {
     return;
   }
 
-  processSmsContent("运营商", content.c_str(), "", MsgTypeInfo(MSG_TYPE_SMS, statusLabel));
+  processSmsContent(modemId, "运营商", content.c_str(), "", MsgTypeInfo(MSG_TYPE_SMS, statusLabel));
 }
 
 // +CUSD: <n>[,<str>[,<dcs>]] —— URC 入口（在 SIM reader task 上下文）
 // 关键约束：本函数不可同步发起推送（HTTPS 阻塞 5–30s 会让 reader task
 // 错过后续 +CMT/RING URC，且黑名单检查可能导致死锁）。仅入队，立即返回。
-void Sms::handleUSSD(const String& line) {
+void Sms::handleUSSD(ModemId modemId, const String& line) {
   if (s_pduQueue == nullptr) {
     LOG("SMS", "USSD 到达但 sms_proc 未启动，丢弃");
     return;
@@ -928,6 +932,7 @@ void Sms::handleUSSD(const String& line) {
   PduQueueItem* item = new PduQueueItem();
   if (!item) { LOG("SMS", "USSD 队列项分配失败"); return; }
   item->kind = SmsItemKind::USSD;
+  item->modemId = modemId;
   strncpy(item->data, line.c_str(), PDU_MAX_LEN);
   item->data[PDU_MAX_LEN] = '\0';
   if (xQueueSend(s_pduQueue, &item, 0) != pdTRUE) {
@@ -936,7 +941,7 @@ void Sms::handleUSSD(const String& line) {
   }
 }
 
-void Sms::handlePDU(const String& line) {
+void Sms::handlePDU(ModemId modemId, const String& line) {
   // 仅入队，立即返回，不在 sim_reader 任务栈上执行任何解码逻辑
   if (s_pduQueue == nullptr) return;
   if (line.length() > PDU_MAX_LEN) {
@@ -946,6 +951,7 @@ void Sms::handlePDU(const String& line) {
   PduQueueItem* item = new PduQueueItem();
   if (!item) { LOG("SMS", "PDU 队列项分配失败"); return; }
   item->kind = SmsItemKind::PDU;
+  item->modemId = modemId;
   strncpy(item->data, line.c_str(), PDU_MAX_LEN);
   item->data[PDU_MAX_LEN] = '\0';
   BaseType_t sent = xQueueSend(s_pduQueue, &item, 0);
@@ -962,9 +968,9 @@ static void smsProcTask(void*) {
     PduQueueItem* item = nullptr;
     if (xQueueReceive(s_pduQueue, &item, portMAX_DELAY) == pdTRUE && item != nullptr) {
       if (item->kind == SmsItemKind::USSD) {
-        processUssdLine(String(item->data));
+        processUssdLine(item->modemId, String(item->data));
       } else {
-        processPduLine(String(item->data));
+        processPduLine(item->modemId, String(item->data));
       }
       delete item;
     }
@@ -973,6 +979,7 @@ static void smsProcTask(void*) {
 }
 
 void Sms::startProcTask() {
+  if (s_pduQueue != nullptr) return;
   s_pduQueue = xQueueCreate(SMS_QUEUE_DEPTH, sizeof(PduQueueItem*));
   if (!s_pduQueue) {
     LOG("SMS", "PDU 队列创建失败");
@@ -983,10 +990,12 @@ void Sms::startProcTask() {
 
 void Sms::checkConcatTimeout() {
   unsigned long now = millis();
-  for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
-    if (concatBuffer[i].inUse && (now - concatBuffer[i].firstPartTime >= CONCAT_TIMEOUT_MS)) {
-      LOG("SMS", "[告警] 长短信超时，丢弃不完整消息（参考号=%d，已收到=%d/%d）", concatBuffer[i].refNumber, concatBuffer[i].receivedParts, concatBuffer[i].totalParts);
-      clearConcatSlot(i);
+  for (ModemId modemId = 0; modemId < MODEM_COUNT; modemId++) {
+    for (int i = 0; i < MAX_CONCAT_MESSAGES; i++) {
+      if (concatBuffer[modemId][i].inUse && (now - concatBuffer[modemId][i].firstPartTime >= CONCAT_TIMEOUT_MS)) {
+        LOG("SMS", "[告警] SIM%u长短信超时，丢弃不完整消息（参考号=%d，已收到=%d/%d）", modemId + 1, concatBuffer[modemId][i].refNumber, concatBuffer[modemId][i].receivedParts, concatBuffer[modemId][i].totalParts);
+        clearConcatSlot(modemId, i);
+      }
     }
   }
 }

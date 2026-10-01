@@ -6,6 +6,7 @@
 #include "controllers/health.h"
 #include "controllers/soc.h"
 #include "controllers/wifi.h"
+#include "controllers/modems.h"
 #include "controllers/blacklist.h"
 #include "controllers/ota.h"
 #include "controllers/logs.h"
@@ -67,6 +68,11 @@ void HttpServer::setup(AsyncWebServer& server) {
     nullptr,
     wifiPostController);
 
+  server.on("/api/modems", HTTP_POST,
+    [](AsyncWebServerRequest* request) {},
+    nullptr,
+    modemsPostController);
+
   // Blacklist API
   server.on("/api/blacklist", HTTP_GET, blacklistGetController);
   server.on("/api/blacklist", HTTP_POST,
@@ -80,6 +86,7 @@ void HttpServer::setup(AsyncWebServer& server) {
 
   // Tool handlers
   server.on("/sendsms", HTTP_POST, sendSmsController);
+  server.on("/api/tools/test-push", HTTP_GET, testPushController);
   server.on("/ping",    HTTP_POST, pingController);
   server.on("/query",   HTTP_GET,  queryController);
   server.on("/flight",  HTTP_GET,  flightModeController);

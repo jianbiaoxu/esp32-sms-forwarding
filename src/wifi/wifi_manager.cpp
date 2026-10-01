@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
+#include <math.h>
 #include "config/config.h"
 #include "../logger/logger.h"
 
@@ -11,6 +12,36 @@ static WiFiMode s_mode = WIFI_MODE_UNINITIALIZED;
 static bool                  s_everConnected = false;
 static bool                  s_initDone      = false;  // 初始化完成标志：STA 获取到 IP 或已进入 AP 模式
 static WifiReconnectCallback s_reconnectCb   = nullptr;
+
+static wifi_power_t configuredWifiTxPower() {
+  int power = (int)lroundf(config.wifiTxPower * 10.0f);
+  switch (power) {
+    case -10: return WIFI_POWER_MINUS_1dBm;
+    case 20:  return WIFI_POWER_2dBm;
+    case 50:  return WIFI_POWER_5dBm;
+    case 70:  return WIFI_POWER_7dBm;
+    case 85:  return WIFI_POWER_8_5dBm;
+    case 110: return WIFI_POWER_11dBm;
+    case 130: return WIFI_POWER_13dBm;
+    case 150: return WIFI_POWER_15dBm;
+    case 170: return WIFI_POWER_17dBm;
+    case 185: return WIFI_POWER_18_5dBm;
+    case 190: return WIFI_POWER_19dBm;
+    case 195: return WIFI_POWER_19_5dBm;
+    default:
+      config.wifiTxPower = 8.5f;
+      return WIFI_POWER_8_5dBm;
+  }
+}
+
+static void applyWifiTxPower() {
+  wifi_power_t power = configuredWifiTxPower();
+  if (!WiFi.setTxPower(power)) {
+    LOG("WIFI", "WiFi发射功率设置失败，配置值 %.1f dBm", config.wifiTxPower);
+  } else {
+    LOG("WIFI", "WiFi发射功率已设置为 %.1f dBm", config.wifiTxPower);
+  }
+}
 
 // 轮询重连状态机
 enum ReconnState {
@@ -89,10 +120,13 @@ static int buildSortedWifiOrder(int* outOrder, int count) {
 static void setupSTAMode() {
   WiFi.setHostname(WifiManager::deviceName().c_str());
   WiFi.mode(WIFI_STA);
+  applyWifiTxPower();
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
 }
 
 static void enterAPMode() {
+  WiFi.mode(WIFI_AP);
+  applyWifiTxPower();
   WiFi.softAP(kApSsid);
   // AP 模式下必须启用 Modem Sleep，否则 WiFi 持续占用射频，BLE 无法发送广播包
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
@@ -265,6 +299,7 @@ void WifiManager::tick() {
         LOG("WIFI", "重连尝试 SSID: %s，第 %d/%d 次", ssid, s_reconnAttempt + 1, WIFI_RECONNECT_ATTEMPTS_PER_SSID);
         WiFi.disconnect(true);
         delay(300);
+        setupSTAMode();
         WiFi.begin(ssid, pass, 0, nullptr, true);
         s_lastAttemptMs = millis();
         s_reconnState   = RECONNECT_CONNECTING;
