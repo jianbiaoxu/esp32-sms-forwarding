@@ -27,14 +27,21 @@ static void serializeOtaStatus(const OtaStatusPayload& p, JsonObject& root) {
     root["message"]        = p.message;
     root["currentVersion"] = p.currentVersion;
     root["latestVersion"]  = p.latestVersion;
+#ifdef SMS_DISABLE_OTA_CHECK
+    root["otaCheckEnabled"] = false;
+#else
+    root["otaCheckEnabled"] = true;
+#endif
 }
 
 // ── GET /api/ota/status ───────────────────────────────────────────
 void otaStatusController(AsyncWebServerRequest* request) {
+#ifndef SMS_DISABLE_OTA_CHECK
     // 若当前空闲则自动触发版本检查（含防抖）
     if (Ota::status().state == OtaState::IDLE) {
         Ota::startVersionCheck();
     }
+#endif
     AsyncJsonResponse* resp = new AsyncJsonResponse();
     JsonObject root = resp->getRoot();
     OtaStatusPayload status = Ota::status();
@@ -47,11 +54,13 @@ void otaStatusController(AsyncWebServerRequest* request) {
 void otaVersionController(AsyncWebServerRequest* request) {
     OtaStatusPayload status = Ota::status();
 
+#ifndef SMS_DISABLE_OTA_CHECK
     // 每次请求时若当前空闲则触发新一轮版本检查（不使用缓存，保证显示最新版本）
     if (status.state == OtaState::IDLE) {
         Ota::startVersionCheck();
         status = Ota::status();
     }
+#endif
 
     AsyncJsonResponse* resp = new AsyncJsonResponse();
     JsonObject root = resp->getRoot();

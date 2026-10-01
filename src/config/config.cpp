@@ -8,6 +8,16 @@
 static constexpr char kNvsSmsConfig[] = "sms_config";
 static constexpr char kNvsRebootCfg[] = "reboot_cfg";
 
+#ifdef SMS_DEFAULT_DUAL
+static constexpr char kDefaultDualSeeded[] = "defaultDualSeeded";
+#endif
+
+#ifdef SMS_WIFI_DIAGNOSTIC
+static constexpr char kDiagnosticWifiSsid[]    = "PDCN";
+static constexpr char kDiagnosticWifiPass[]    = "0000OOOO";
+static constexpr char kDiagnosticWifiSeeded[]  = "diagWifiSeeded";
+#endif
+
 static String trimStr(const String& s) {
   String r = s;
   r.trim();
@@ -17,12 +27,77 @@ static String trimStr(const String& s) {
 static ModemConfig defaultModemConfig(ModemId id) {
   ModemConfig modem{};
   modem.enabled = true;
+#ifdef SMS_WIFI_DIAGNOSTIC
+  modem.enabled = id == 1;
+#endif
   modem.name    = id == 0 ? "SIM1" : "SIM2";
+#ifdef SMS_BOARD_CH343
+  // 通用 CH343 板固定：物理针脚08/09的UART0实际为GPIO21/20 -> SIM1，
+  // UART1 GPIO0/1 -> SIM2。
+  modem.rxPin   = id == 0 ? 20 : 1;
+  modem.txPin   = id == 0 ? 21 : 0;
+  modem.enPin   = -1;
+#else
   modem.rxPin   = id == 0 ? 4 : 9;
   modem.txPin   = id == 0 ? 3 : 10;
   modem.enPin   = id == 0 ? 5 : 6;
+#endif
   return modem;
 }
+
+#ifdef SMS_BOARD_CH343
+static void applyBoardModemPinMap() {
+  config.modems[0].rxPin = 20;
+  config.modems[0].txPin = 21;
+  config.modems[0].enPin = -1;
+  config.modems[1].rxPin = 1;
+  config.modems[1].txPin = 0;
+  config.modems[1].enPin = -1;
+}
+#endif
+
+#ifdef SMS_WIFI_DIAGNOSTIC
+static void applyWifiDiagnosticModemPolicy() {
+  // UART0 要留给 CH343 日志，只使用 UART1 上的 SIM2。
+  config.modems[0].enabled = false;
+  config.modems[1].enabled = true;
+  config.atBridgeEnabled   = false;
+}
+
+static void seedWifiDiagnosticConfig(Preferences& prefs) {
+  bool seeded  = prefs.getBool(kDiagnosticWifiSeeded, false);
+  bool hasWifi = config.wifiCount > 0 && config.wifiList[0].ssid.length() > 0;
+  if (seeded && hasWifi) {
+    return;
+  }
+
+  // 首次启动自动准备测试网络，并持久化到NVS；后续仍以网页保存的配置为准。
+  config.wifiCount            = 1;
+  config.wifiList[0].ssid     = kDiagnosticWifiSsid;
+  config.wifiList[0].password = kDiagnosticWifiPass;
+  prefs.putUChar("wifiCount", 1);
+  prefs.putString("wifi0ssid", kDiagnosticWifiSsid);
+  prefs.putString("wifi0pass", kDiagnosticWifiPass);
+  prefs.putBool(kDiagnosticWifiSeeded, true);
+  LOG("CFG", "%s，已配置默认WiFi: %s", seeded ? "诊断固件已修复空WiFi配置" : "诊断固件首次启动", kDiagnosticWifiSsid);
+}
+#endif
+
+#ifdef SMS_DEFAULT_DUAL
+static void seedDefaultDualModemConfig(Preferences& prefs) {
+  if (prefs.getBool(kDefaultDualSeeded, false)) {
+    return;
+  }
+
+  // 仅首次启动修复旧固件可能留下的单路开关；后续网页保存的启用状态不再被覆盖。
+  config.modems[0].enabled = true;
+  config.modems[1].enabled = true;
+  prefs.putBool("modem0En", true);
+  prefs.putBool("modem1En", true);
+  prefs.putBool(kDefaultDualSeeded, true);
+  LOG("CFG", "双路默认配置已启用 SIM1 与 SIM2");
+}
+#endif
 
 Config config;
 RebootSchedule rebootSchedule;
@@ -92,6 +167,10 @@ void ConfigStore::load() {
     }
   }
 
+#ifdef SMS_WIFI_DIAGNOSTIC
+  seedWifiDiagnosticConfig(prefs);
+#endif
+
   config.wifiTxPower = prefs.isKey("wifiTxPower") ? prefs.getFloat("wifiTxPower", 8.5f) : 8.5f;
   if (config.wifiTxPower < -1.0f || config.wifiTxPower > 19.5f) {
     config.wifiTxPower = 8.5f;
@@ -108,6 +187,16 @@ void ConfigStore::load() {
     config.modems[i].txPin   = prefs.getInt((prefix + "Tx").c_str(), defaults.txPin);
     config.modems[i].enPin   = prefs.getInt((prefix + "EnPin").c_str(), defaults.enPin);
   }
+#ifdef SMS_BOARD_CH343
+  // 不采信旧 NVS 或旧固件写入的 GPIO，防止恢复配置后重新使用错误引脚。
+  applyBoardModemPinMap();
+#endif
+#ifdef SMS_WIFI_DIAGNOSTIC
+  applyWifiDiagnosticModemPolicy();
+#endif
+#ifdef SMS_DEFAULT_DUAL
+  seedDefaultDualModemConfig(prefs);
+#endif
 
   config.pushStrategy = (PushStrategy)(prefs.isKey("pushStrategy") ? prefs.getUChar("pushStrategy", 0) : 0);
   config.remark       = prefs.isKey("remark") ? prefs.getString("remark", "") : "";
@@ -133,7 +222,12 @@ void ConfigStore::save() {
   if (config.pushStrategy != PUSH_STRATEGY_BROADCAST && config.pushStrategy != PUSH_STRATEGY_FAILOVER) {
     config.pushStrategy = PUSH_STRATEGY_BROADCAST;
   }
-
+#ifdef SMS_BOARD_CH343
+  applyBoardModemPinMap();
+#endif
+#ifdef SMS_WIFI_DIAGNOSTIC
+  applyWifiDiagnosticModemPolicy();
+#endif
   NvsScope p(kNvsSmsConfig, false);
   if (!p.ok()) {
     return;
@@ -285,12 +379,15 @@ void ConfigStore::reset() {
     config.pushChannels[i].type = PUSH_TYPE_POST_JSON;
   }
   config.wifiCount = 1;
+#ifdef SMS_WIFI_DIAGNOSTIC
+  config.wifiList[0] = WifiEntry{kDiagnosticWifiSsid, kDiagnosticWifiPass};
+#else
   config.wifiList[0] = WifiEntry{"", ""};
+#endif
   config.wifiTxPower = 8.5f;
   for (ModemId i = 0; i < MODEM_COUNT; i++) {
     config.modems[i] = defaultModemConfig(i);
   }
-
   rebootSchedule = RebootSchedule{};
   rebootSchedule.hour      = 3;
   rebootSchedule.intervalH = 24;
@@ -474,7 +571,12 @@ void ConfigStore::fromJson(JsonDocument& doc) {
       i++;
     }
   }
-
+#ifdef SMS_BOARD_CH343
+  applyBoardModemPinMap();
+#endif
+#ifdef SMS_WIFI_DIAGNOSTIC
+  applyWifiDiagnosticModemPolicy();
+#endif
   if (doc["reboot"].is<JsonObject>()) {
     JsonObject r = doc["reboot"].as<JsonObject>();
     rebootSchedule.enabled   = r["enabled"]   | rebootSchedule.enabled;

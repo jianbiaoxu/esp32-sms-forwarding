@@ -31,7 +31,13 @@ static DispatcherContext& context(ModemId modemId) {
 }
 
 static HardwareSerial& modemSerial(ModemId modemId) {
+#ifdef SMS_BOARD_CH343
+    // 通用 CH343 板：UART0 -> SIM1，UART1 -> SIM2。
+    return modemId == 0 ? Serial0 : Serial1;
+#else
+    // SuperMini 旧硬件映射保持不变：UART1 -> SIM1，UART0 -> SIM2。
     return modemId == 0 ? Serial1 : Serial0;
+#endif
 }
 
 bool isFinalOkLine(const String& line) {
@@ -424,7 +430,7 @@ bool SimDispatcher::pauseReader(ModemId modemId, unsigned long timeoutMs) {
     // Reader task 不存在时一律拒绝独占。
     // 旧实现在此返回 true（语义是「没什么要暂停的，可以直接用串口」），但在
     // USB AT 透传模式下 SimDispatcher 根本不会启动，调用方拿到 true 后会裸写
-    // Serial1（/ping 的 AT+MPING、短信发送的 AT+CMGS），从而与透传任务抢串口、
+    // 主模组 UART（/ping 的 AT+MPING、短信发送的 AT+CMGS），从而与透传任务抢串口、
     // 污染送给 USB 主机的 AT 流。
     // 正常流程中 startReaderTask() 之后 s_task 必然非空，且在此之前没有任何
     // 调用点，因此改为返回 false 不影响既有路径。

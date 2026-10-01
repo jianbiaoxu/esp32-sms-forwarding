@@ -300,8 +300,9 @@
       <div class="section">
         <div class="section-title">🔌 ML307 双模组 UART 配置</div>
         <div class="hint">
-          两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。GPIO9 是 ESP32-C3
-          启动相关引脚，按住 BOOT 或外部电平可能影响上电启动，请确认硬件连接。
+          两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。UART 和引脚信息
+          以当前硬件配置为准，EN 若已硬接 +5V 则由固件自动禁止 GPIO 控制。当前板卡
+          SIM1 使用物理针脚 08/09 引出的 UART0（实际 GPIO21/GPIO20），SIM2 使用 UART1 GPIO0/GPIO1。
         </div>
         <div id="modemCards"></div>
         <button type="button" onclick="saveModemConfig()" style="background:#1976d2;width:auto;">
@@ -962,9 +963,14 @@
         return el ? parseInt(el.value || "0", 10) : 0;
       }
 
-      function renderModemCards(modems) {
+      var modemPinConfigFixed = false;
+      var modemEnControl = true;
+
+      function renderModemCards(modems, pinConfigFixed, enControl) {
         var cards = document.getElementById("modemCards");
         var selector = document.getElementById("toolModem");
+        modemPinConfigFixed = pinConfigFixed === true;
+        modemEnControl = enControl !== false;
         cards.innerHTML = "";
         selector.innerHTML = "";
         for (var i = 0; i < 2; i++) {
@@ -978,6 +984,17 @@
             enPin: i === 0 ? 5 : 6,
           };
           var id = modem.id !== undefined ? modem.id : i;
+          var pinFields = modemPinConfigFixed
+            ? '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">' +
+                '<div class="form-group"><label>RX GPIO（固定）</label><input type="number" id="modemRx' + id + '" value="' + modem.rxPin + '" readonly></div>' +
+                '<div class="form-group"><label>TX GPIO（固定）</label><input type="number" id="modemTx' + id + '" value="' + modem.txPin + '" readonly></div>' +
+              '</div>' +
+              '<div class="hint" style="margin-top:6px;">EN：已硬接 +5V，固件不控制</div>'
+            : '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">' +
+                '<div class="form-group"><label>RX GPIO</label><input type="number" id="modemRx' + id + '" value="' + modem.rxPin + '"></div>' +
+                '<div class="form-group"><label>TX GPIO</label><input type="number" id="modemTx' + id + '" value="' + modem.txPin + '"></div>' +
+                '<div class="form-group"><label>EN GPIO</label><input type="number" id="modemEn' + id + '" value="' + modem.enPin + '"></div>' +
+              '</div>';
           cards.insertAdjacentHTML(
             "beforeend",
             '<div style="border:1px solid #d7e3ef;border-radius:6px;padding:12px;margin:10px 0;background:#f8fbff;">' +
@@ -986,11 +1003,7 @@
                 '<label style="margin:0;"><input type="checkbox" id="modemEnabled' + id + '" ' + (modem.enabled ? "checked" : "") + '> 启用</label>' +
               '</div>' +
               '<div class="form-group"><label>名称</label><input id="modemName' + id + '" value="' + escapeHtml(modem.name || ("SIM" + (id + 1))) + '"></div>' +
-              '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">' +
-                '<div class="form-group"><label>RX GPIO</label><input type="number" id="modemRx' + id + '" value="' + modem.rxPin + '"></div>' +
-                '<div class="form-group"><label>TX GPIO</label><input type="number" id="modemTx' + id + '" value="' + modem.txPin + '"></div>' +
-                '<div class="form-group"><label>EN GPIO</label><input type="number" id="modemEn' + id + '" value="' + modem.enPin + '"></div>' +
-              '</div>' +
+              pinFields +
               '<button type="button" style="background:#00897b;width:auto;margin-top:4px;" onclick="testPush(' + id + ')">📨 测试此模组推送</button>' +
               '<div class="result-box" id="testPushResult' + id + '"></div>' +
             '</div>'
@@ -1006,7 +1019,7 @@
             return resp.json();
           })
           .then(function (data) {
-            renderModemCards(data.modems || []);
+            renderModemCards(data.modems || [], data.modemPinConfigFixed, data.enControl);
           });
       }
 
@@ -1014,14 +1027,19 @@
         var result = document.getElementById("modemConfigResult");
         var modems = [];
         for (var i = 0; i < 2; i++) {
-          modems.push({
+          var modemConfig = {
             id: i,
             enabled: document.getElementById("modemEnabled" + i).checked,
             name: document.getElementById("modemName" + i).value.trim(),
             rxPin: parseInt(document.getElementById("modemRx" + i).value, 10),
             txPin: parseInt(document.getElementById("modemTx" + i).value, 10),
-            enPin: parseInt(document.getElementById("modemEn" + i).value, 10),
-          });
+          };
+          if (modemEnControl) {
+            modemConfig.enPin = parseInt(document.getElementById("modemEn" + i).value, 10);
+          } else {
+            modemConfig.enPin = -1;
+          }
+          modems.push(modemConfig);
         }
         result.className = "result-box result-loading";
         result.style.display = "block";
@@ -1401,6 +1419,12 @@
         var latestEl = document.getElementById("otaLatestVer");
         var onlineBtn = document.getElementById("otaOnlineBtn");
         var upToDate = document.getElementById("otaUpToDate");
+        var onlineArea = document.getElementById("otaOnlineArea");
+
+        if (d.otaCheckEnabled === false) {
+          latestEl.textContent = "已关闭（自定义固件）";
+          onlineArea.style.display = "none";
+        }
 
         if (d.currentVersion) {
           curVerEl.textContent = d.currentVersion;
@@ -1492,6 +1516,7 @@
           })
           .then(function (d) {
             renderOtaStatus(d);
+            if (d.otaCheckEnabled === false) return;
             // 只要版本号还没拿到就启动轮询（后端任务异步启动，首次响应可能仍是 idle+空版本）
             if (!d.latestVersion) {
               startOtaPolling();

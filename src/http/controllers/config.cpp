@@ -25,6 +25,20 @@ void configController(AsyncWebServerRequest* request) {
 
   root["pushStrategy"] = (int)config.pushStrategy;
   root["pushCount"]    = config.pushCount;
+#ifdef SMS_BOARD_CH343
+  root["modemPinConfigFixed"] = true;
+  root["enControl"]            = false;
+  root["fixedUartMapping"]     = "UART0->SIM1, UART1->SIM2";
+#else
+  root["modemPinConfigFixed"] = false;
+  root["enControl"]            = true;
+#endif
+#ifdef SMS_WIFI_DIAGNOSTIC
+  root["diagnosticMode"]       = true;
+  root["wifiTxPowerApplied"]   = false;
+  root["debugTransport"]       = "CH343 UART0";
+  root["diagnosticModem"]      = "SIM2 / UART1";
+#endif
 
   root["rbEnabled"]   = rebootSchedule.enabled;
   root["rbMode"]      = (int)rebootSchedule.mode;
@@ -59,7 +73,11 @@ void configController(AsyncWebServerRequest* request) {
     modem["id"]      = i;
     modem["enabled"] = config.modems[i].enabled;
     modem["name"]    = config.modems[i].name;
+#ifdef SMS_BOARD_CH343
+    modem["uart"]    = i == 0 ? "UART0" : "UART1";
+#else
     modem["uart"]    = i == 0 ? "UART1" : "UART0";
+#endif
     modem["rxPin"]   = config.modems[i].rxPin;
     modem["txPin"]   = config.modems[i].txPin;
     modem["enPin"]   = config.modems[i].enPin;
