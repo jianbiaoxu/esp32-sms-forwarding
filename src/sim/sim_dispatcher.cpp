@@ -86,6 +86,9 @@ bool isUrcLine(ModemId modemId, const String& line) {
     // 不在此识别，就会在某条命令在途时被并入该命令的响应并使其解析失败——实测
     // 表现为 AT+CPMS? 返回 "+MATREADY\n+CPMS: ..."，上层直接判为非法响应。
     if (line.startsWith("+MATREADY"))           return true;
+    // ML307 MHTTP 的响应通过异步 +MHTTPURC 上报。4G 请求超时或清理稍晚时，残留
+    // 上报可能在 reader 恢复后才到达；必须隔离它，不能污染下一条普通 AT 命令。
+    if (line.startsWith("+MHTTPURC:"))          return true;
     return false;
 }
 
@@ -457,6 +460,13 @@ bool SimDispatcher::pauseReader(ModemId modemId, unsigned long timeoutMs) {
 void SimDispatcher::resumeReader(ModemId modemId) {
     DispatcherContext& state = context(modemId);
     state.pauseRequested = false;
+    // 等 reader 真正退出暂停态后再释放独占锁，避免下一次直接事务或普通
+    // AT 命令在 reader 仍处于暂停态时开始，造成串口响应丢失。
+    unsigned long start = millis();
+    while (state.readerPaused && millis() - start < 1000) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (state.directTxnMutex != nullptr) {
         xSemaphoreGive(state.directTxnMutex);
     }

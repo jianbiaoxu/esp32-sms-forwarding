@@ -43,6 +43,7 @@ void modemsPostController(AsyncWebServerRequest* request, uint8_t* data,
       return;
     }
     next[id].enabled = modem["enabled"] | next[id].enabled;
+    next[id].httpPushEnabled = modem["httpPushEnabled"] | next[id].httpPushEnabled;
     next[id].name    = modem["name"] | next[id].name;
     next[id].rxPin   = modem["rxPin"] | next[id].rxPin;
     next[id].txPin   = modem["txPin"] | next[id].txPin;

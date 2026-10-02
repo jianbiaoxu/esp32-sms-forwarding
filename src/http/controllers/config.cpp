@@ -72,6 +72,7 @@ void configController(AsyncWebServerRequest* request) {
     JsonObject modem = modems.add<JsonObject>();
     modem["id"]      = i;
     modem["enabled"] = config.modems[i].enabled;
+    modem["httpPushEnabled"] = config.modems[i].httpPushEnabled;
     modem["name"]    = config.modems[i].name;
 #ifdef SMS_BOARD_CH343
     modem["uart"]    = i == 0 ? "UART0" : "UART1";

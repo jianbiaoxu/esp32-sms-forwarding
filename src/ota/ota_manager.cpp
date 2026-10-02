@@ -63,6 +63,10 @@ OtaStatusPayload Ota::status() {
     p.message        = g_message;
     p.currentVersion = g_currentVer;
     p.latestVersion  = g_latestVer;
+    const esp_partition_t* nextPart = g_otaPart != nullptr
+        ? g_otaPart
+        : esp_ota_get_next_update_partition(nullptr);
+    p.otaPartitionSize = nextPart != nullptr ? nextPart->size : 0;
     return p;
 }
 

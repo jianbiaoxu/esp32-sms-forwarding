@@ -19,6 +19,7 @@ struct OtaStatusPayload {
   String   message        = "";    // 失败原因或当前阶段说明
   String   currentVersion = "";    // 当前固件版本
   String   latestVersion  = "";    // 远端最新版本（仅 CHECKING 完成后）
+  size_t   otaPartitionSize = 0;   // 当前可写 OTA 分区大小
 };
 
 // GitHub Release 基础 URL（拼接 tag 得到具体下载地址）

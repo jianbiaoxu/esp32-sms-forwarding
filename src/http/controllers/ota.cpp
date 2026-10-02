@@ -27,6 +27,7 @@ static void serializeOtaStatus(const OtaStatusPayload& p, JsonObject& root) {
     root["message"]        = p.message;
     root["currentVersion"] = p.currentVersion;
     root["latestVersion"]  = p.latestVersion;
+    root["otaPartitionSize"] = p.otaPartitionSize;
 #ifdef SMS_DISABLE_OTA_CHECK
     root["otaCheckEnabled"] = false;
 #else
