@@ -88,14 +88,14 @@ void testPushController(AsyncWebServerRequest* request) {
 void pingController(AsyncWebServerRequest* request) {
   ModemId modemId = requestModemId(request);
   HardwareSerial& serial = SimDispatcher::serial(modemId);
-  // Ping 会 pauseReader() 独占 UART 并裸写 Serial1，必然打断桥会话。
+  // Ping 会 pauseReader() 独占目标 UART，必然打断桥会话。
   if (atBridgeSessionActive()) { sendJsonResponse(request, false, "远程 AT 会话进行中，请稍后重试"); return; }
   LOG("HTOOLS", "网页端发起Ping请求");
 
   sendATCommand(modemId, "AT+CGACT=1,1", 10000);
   delay(500);
 
-  // AT+MPING 为异步多行响应，通过 Serial1 直接收取（reader task 此时已阻塞在调用方等待）
+  // AT+MPING 为异步多行响应，通过目标 UART 直接收取（reader task 此时已阻塞在调用方等待）
   if (!SimDispatcher::pauseReader(modemId)) {
     sendATCommand(modemId, "AT+CGACT=0,1", 5000);
     sendJsonResponse(request, false, "SIM 串口忙，请稍后重试");

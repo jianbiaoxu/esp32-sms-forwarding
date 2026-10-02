@@ -43,19 +43,35 @@ void modemsPostController(AsyncWebServerRequest* request, uint8_t* data,
       return;
     }
     next[id].enabled = modem["enabled"] | next[id].enabled;
+    next[id].httpPushEnabled = modem["httpPushEnabled"] | next[id].httpPushEnabled;
     next[id].name    = modem["name"] | next[id].name;
     next[id].rxPin   = modem["rxPin"] | next[id].rxPin;
     next[id].txPin   = modem["txPin"] | next[id].txPin;
+#ifndef SMS_BOARD_CH343
     next[id].enPin   = modem["enPin"] | next[id].enPin;
+#endif
     position++;
   }
 
+#ifdef SMS_BOARD_CH343
+  // EN 已硬接 +5V，始终禁止固件控制；RX/TX 使用用户提交的动态 GPIO。
+  for (ModemId i = 0; i < MODEM_COUNT; i++) next[i].enPin = -1;
+#endif
+
   for (ModemId i = 0; i < MODEM_COUNT; i++) {
-    if (!validPin(next[i].rxPin) || !validPin(next[i].txPin) || !validPin(next[i].enPin)) {
+    if (!validPin(next[i].rxPin) || !validPin(next[i].txPin)
+#ifndef SMS_BOARD_CH343
+        || !validPin(next[i].enPin)
+#endif
+    ) {
       JsonResp::err(request, 400, "GPIO必须在0到21之间");
       return;
     }
-    if (next[i].rxPin == next[i].txPin || next[i].rxPin == next[i].enPin || next[i].txPin == next[i].enPin) {
+    if (next[i].rxPin == next[i].txPin
+#ifndef SMS_BOARD_CH343
+        || next[i].rxPin == next[i].enPin || next[i].txPin == next[i].enPin
+#endif
+    ) {
       JsonResp::err(request, 400, "同一路模组的RX、TX、EN不能使用同一个GPIO");
       return;
     }
@@ -66,8 +82,13 @@ void modemsPostController(AsyncWebServerRequest* request, uint8_t* data,
     if (!next[i].enabled) continue;
     for (ModemId j = i + 1; j < MODEM_COUNT; j++) {
       if (!next[j].enabled) continue;
+#ifdef SMS_BOARD_CH343
+      int pinsI[] = {next[i].rxPin, next[i].txPin};
+      int pinsJ[] = {next[j].rxPin, next[j].txPin};
+#else
       int pinsI[] = {next[i].rxPin, next[i].txPin, next[i].enPin};
       int pinsJ[] = {next[j].rxPin, next[j].txPin, next[j].enPin};
+#endif
       for (int a : pinsI) for (int b : pinsJ) {
         if (a == b) {
           JsonResp::err(request, 400, "两路启用模组不能复用同一个GPIO");

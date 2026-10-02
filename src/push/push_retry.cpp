@@ -94,6 +94,11 @@ void PushRetry::tick() {
 
   // RetryReason::SEND_FAILED — 保持原有逻辑
   if (millis() < front.nextRetryMs) return;
+  if (Push::isCellularHttpFallback(t.channelIndex)) {
+    LOG("RETRY", "4G HTTP 旁路失败不重试，丢弃通道索引 %d", t.channelIndex);
+    s_retryQueue.pop();
+    return;
+  }
   bool ok = Push::executeChannel(t.channelIndex, t.sender, t.message, t.timestamp, t.msgType, t.modemId);
   if (ok) {
     LOG("RETRY", "重试成功，通道索引 %d，出队", t.channelIndex);

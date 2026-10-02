@@ -31,7 +31,13 @@ static DispatcherContext& context(ModemId modemId) {
 }
 
 static HardwareSerial& modemSerial(ModemId modemId) {
+#ifdef SMS_BOARD_CH343
+    // 通用 CH343 板：UART0 -> SIM1，UART1 -> SIM2。
+    return modemId == 0 ? Serial0 : Serial1;
+#else
+    // SuperMini 旧硬件映射保持不变：UART1 -> SIM1，UART0 -> SIM2。
     return modemId == 0 ? Serial1 : Serial0;
+#endif
 }
 
 bool isFinalOkLine(const String& line) {
@@ -80,6 +86,9 @@ bool isUrcLine(ModemId modemId, const String& line) {
     // 不在此识别，就会在某条命令在途时被并入该命令的响应并使其解析失败——实测
     // 表现为 AT+CPMS? 返回 "+MATREADY\n+CPMS: ..."，上层直接判为非法响应。
     if (line.startsWith("+MATREADY"))           return true;
+    // ML307 MHTTP 的响应通过异步 +MHTTPURC 上报。4G 请求超时或清理稍晚时，残留
+    // 上报可能在 reader 恢复后才到达；必须隔离它，不能污染下一条普通 AT 命令。
+    if (line.startsWith("+MHTTPURC:"))          return true;
     return false;
 }
 
@@ -424,7 +433,7 @@ bool SimDispatcher::pauseReader(ModemId modemId, unsigned long timeoutMs) {
     // Reader task 不存在时一律拒绝独占。
     // 旧实现在此返回 true（语义是「没什么要暂停的，可以直接用串口」），但在
     // USB AT 透传模式下 SimDispatcher 根本不会启动，调用方拿到 true 后会裸写
-    // Serial1（/ping 的 AT+MPING、短信发送的 AT+CMGS），从而与透传任务抢串口、
+    // 主模组 UART（/ping 的 AT+MPING、短信发送的 AT+CMGS），从而与透传任务抢串口、
     // 污染送给 USB 主机的 AT 流。
     // 正常流程中 startReaderTask() 之后 s_task 必然非空，且在此之前没有任何
     // 调用点，因此改为返回 false 不影响既有路径。
@@ -451,6 +460,13 @@ bool SimDispatcher::pauseReader(ModemId modemId, unsigned long timeoutMs) {
 void SimDispatcher::resumeReader(ModemId modemId) {
     DispatcherContext& state = context(modemId);
     state.pauseRequested = false;
+    // 等 reader 真正退出暂停态后再释放独占锁，避免下一次直接事务或普通
+    // AT 命令在 reader 仍处于暂停态时开始，造成串口响应丢失。
+    unsigned long start = millis();
+    while (state.readerPaused && millis() - start < 1000) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (state.directTxnMutex != nullptr) {
         xSemaphoreGive(state.directTxnMutex);
     }

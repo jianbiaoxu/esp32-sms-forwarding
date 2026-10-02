@@ -49,4 +49,8 @@ public:
   static bool executeChannel(int channelIdx, const String& sender, const String& message,
                           const String& timestamp, const MsgTypeInfo& msgType,
                           ModemId modemId = MODEM_PRIMARY);
+
+  // 判断某通道当前是否会走 4G 旁路。4G 旁路失败后不进入重试队列，避免
+  // 网络异常时反复占用主循环；WiFi 可用时仍按原有通道和重试策略执行。
+  static bool isCellularHttpFallback(int channelIdx);
 };

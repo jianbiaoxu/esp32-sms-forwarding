@@ -64,6 +64,7 @@ struct WifiEntry {
 
 struct ModemConfig {
   bool   enabled;
+  bool   httpPushEnabled;
   String name;
   int    rxPin;
   int    txPin;

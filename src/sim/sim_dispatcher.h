@@ -78,7 +78,7 @@ using SimUrcCallback = void (*)(ModemId modemId, SimUrcType type, const String& 
 
 // SimDispatcher：纯通讯层。
 // 职责：
-//   - 持有 Serial1 的读写权；任何对 SIM 模组的字节级访问都必须经此类
+//   - 持有目标模组 UART 的读写权；任何对 SIM 模组的字节级访问都必须经此类
 //   - FIFO 命令队列 + Reader Task 模型，串行化所有 AT 调度，避免响应混淆
 //   - URC 解析与回调分发（不含业务逻辑）
 //   - 对外提供 pauseReader/resumeReader 以便特殊场景（如 OTA 期）独占 UART
@@ -127,7 +127,7 @@ public:
   static bool   routeIfUrc(ModemId modemId, const String& line);
   static bool   routeIfUrc(const String& line) { return routeIfUrc(MODEM_PRIMARY, line); }
 
-  // 暂停 Reader Task，调用方可直接 Serial1.read/write（必须配对 resumeReader）。
+  // 暂停 Reader Task，调用方可直接访问目标 UART（必须配对 resumeReader）。
   // 返回 false 表示在 timeoutMs 内未能确认 Reader Task 让出 UART。
   static bool   pauseReader(ModemId modemId, unsigned long timeoutMs = 10000);
   static bool   pauseReader(unsigned long timeoutMs = 10000) { return pauseReader(MODEM_PRIMARY, timeoutMs); }

@@ -44,10 +44,14 @@ constexpr unsigned long BOOT_PUSH_DELAY_MS = 3000;
 // ---------- helpers ----------
 
 static void blinkShort(unsigned long gap = 500) {
+#ifdef SMS_BOARD_CH343
+  (void)gap;
+#else
   digitalWrite(LED_BUILTIN, LOW);
   delay(50);
   digitalWrite(LED_BUILTIN, HIGH);
   delay(gap);
+#endif
 }
 
 static void delayWithWdt(unsigned long ms) {
@@ -61,11 +65,20 @@ static void delayWithWdt(unsigned long ms) {
 }
 
 static void modemPowerOff(ModemId modemId) {
+#ifdef SMS_BOARD_CH343
+  // CH343 板上的 ML307 EN 已硬接 +5V，禁止固件通过 GPIO 操作 EN。
+  (void)modemId;
+#else
   pinMode(config.modems[modemId].enPin, OUTPUT);
   digitalWrite(config.modems[modemId].enPin, LOW);
+#endif
 }
 
 static void modemPowerCycle(ModemId modemId) {
+#ifdef SMS_BOARD_CH343
+  // 模组由外部 EN+5V 上电，软件只等待串口就绪，不切换任何 GPIO。
+  (void)modemId;
+#else
   pinMode(config.modems[modemId].enPin, OUTPUT);
   LOG("MAIN", "SIM%u EN 拉低：关闭模组", modemId + 1);
   digitalWrite(config.modems[modemId].enPin, LOW);
@@ -73,10 +86,11 @@ static void modemPowerCycle(ModemId modemId) {
   LOG("MAIN", "SIM%u EN 拉高：开启模组", modemId + 1);
   digitalWrite(config.modems[modemId].enPin, HIGH);
   // 这里只做最小稳定延时，不再盲等固定时长：
-  // 拉高之后到 Sim::ensureFreshModemSession() 之间没有任何代码访问 Serial1
+  // 拉高之后到 Sim::ensureFreshModemSession() 之间没有任何代码访问模组 UART
   // （WiFi / NTP / LittleFS / HTTP 初始化都不碰模组），模组可以在那段时间里
   // 并行启动；真正的「等 AT 就绪」由 ensureFreshModemSession 轮询完成。
   delayWithWdt(500);
+#endif
 }
 
 static bool startNextConfiguredModem() {
@@ -142,10 +156,17 @@ void setup() {
   // 立即喂狗：框架初始化可能已消耗部分 TWDT 窗口
   esp_task_wdt_reset();
 
+#ifndef SMS_BOARD_CH343
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
+#endif
 
+#ifdef SMS_CH343_LOG_UART
+  // 诊断版释放 UART0 给 CH343 输出日志；SIM1 不初始化、不启动。
+  Serial0.begin(115200, SERIAL_8N1, 20, 21);
+#else
   Serial.begin(115200);
+#endif
   delayWithWdt(1500);  // 替换裸 delay：此时尚未有任何输出，必须喂狗
 
   // 先加载配置，再按配置初始化两路 UART 和 EN。这样 UART 引脚可由网页配置，
@@ -160,6 +181,11 @@ void setup() {
   // "+CSIM: 516,\"<516 hex>\"" 约 530 字节，再加后续的 "OK"。
   // 原值 500 会在 reader task 稍有延迟时溢出丢字节。
   for (ModemId modemId = 0; modemId < MODEM_COUNT; modemId++) {
+#ifdef SMS_WIFI_DIAGNOSTIC
+    if (modemId == 0) {
+      continue;
+    }
+#endif
     HardwareSerial& serial = SimDispatcher::serial(modemId);
     serial.setRxBufferSize(2048);
     serial.begin(115200, SERIAL_8N1,
@@ -213,7 +239,7 @@ void setup() {
   PushQueue::init();
 
   if (config.atBridgeEnabled) {
-    // USB AT 透传模式：不启动 SimDispatcher，固件之后不再访问 Serial1，
+    // USB AT 透传模式：不启动 SimDispatcher，固件之后不再访问主模组 UART，
     // 把模组的 AT 接口原样交给 USB 主机（原因详见 sim/at_bridge.h）。
     LOG("MAIN", "USB AT 透传模式已启用，跳过 SIM 初始化");
     modemPowerCycle(MODEM_PRIMARY);
@@ -225,7 +251,9 @@ void setup() {
     esp_task_wdt_reset();
   }
 
+#ifndef SMS_BOARD_CH343
   digitalWrite(LED_BUILTIN, LOW);
+#endif
   // 开机推送在 loop() 中检测 WifiManager::isInitDone() 上升沿后自动安排
 }
 
