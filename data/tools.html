@@ -300,9 +300,9 @@
       <div class="section">
         <div class="section-title">🔌 ML307 双模组 UART 配置</div>
         <div class="hint">
-          两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。UART 和引脚信息
-          以当前硬件配置为准，EN 若已硬接 +5V 则由固件自动禁止 GPIO 控制。当前板卡
-          SIM1 使用物理针脚 08/09 引出的 UART0（实际 GPIO21/GPIO20），SIM2 使用 UART1 GPIO0/GPIO1。
+          两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。UART 归属固定为
+          UART0→SIM1、UART1→SIM2，RX/TX GPIO 可编辑并在重启后生效。EN 若已硬接 +5V，
+          固件不控制 EN。
         </div>
         <div id="modemCards"></div>
         <button type="button" onclick="saveModemConfig()" style="background:#1976d2;width:auto;">
@@ -978,9 +978,9 @@
             id: i,
             enabled: i === 0,
             name: "SIM" + (i + 1),
-            uart: i === 0 ? "UART1" : "UART0",
-            rxPin: i === 0 ? 4 : 9,
-            txPin: i === 0 ? 3 : 10,
+            uart: i === 0 ? "UART0" : "UART1",
+            rxPin: i === 0 ? 10 : 1,
+            txPin: i === 0 ? 3 : 0,
             enPin: i === 0 ? 5 : 6,
           };
           var id = modem.id !== undefined ? modem.id : i;

@@ -172,7 +172,7 @@ pio run -e esp32_c3_ch343
 pio run -e esp32_c3_ch343 -t buildfs
 ```
 
-该目标的固定硬件映射为开发板物理针脚 08/09 引出的 UART0（实际 TX GPIO21、RX GPIO20）→ SIM1，UART1（TX GPIO0、RX GPIO1）→ SIM2；ML307 的 EN 已外部短接到 +5V，固件不会配置或切换 EN GPIO。CH343 主要用于烧录，运行日志优先从 Web 工具箱的日志页面查看。首次烧录请使用该目标生成的全量 factory 镜像并写入 `0x0`，不要混用 SuperMini 目标生成的镜像。
+该目标的 UART 归属为 UART0 → SIM1、UART1（TX GPIO0、RX GPIO1）→ SIM2；默认 SIM1 为 RX GPIO10、TX GPIO3，以避开带 CH343 经典版的 UART0 GPIO20/21，工具箱可动态修改两路 RX/TX GPIO，保存后重启生效。ML307 的 EN 已外部短接到 +5V，固件不会配置或切换 EN GPIO。CH343 主要用于烧录，运行日志优先从 Web 工具箱的日志页面查看。首次烧录请使用该目标生成的全量 factory 镜像并写入 `0x0`，不要混用 SuperMini 目标生成的镜像。
 
 另提供 esp32_c3_ch343_wifi_diag 诊断目标：保持 WiFi 芯片默认发射功率，释放 UART0 给 CH343 输出日志，固定禁用 SIM1，仅启用 UART1/GPIO0/GPIO1 上的 SIM2，用于先验证 AP/STA WiFi 和日志链路。该目标不是双模组正式固件。
 

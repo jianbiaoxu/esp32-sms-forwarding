@@ -8,10 +8,6 @@
 static constexpr char kNvsSmsConfig[] = "sms_config";
 static constexpr char kNvsRebootCfg[] = "reboot_cfg";
 
-#ifdef SMS_DEFAULT_DUAL
-static constexpr char kDefaultDualSeeded[] = "defaultDualSeeded";
-#endif
-
 #ifdef SMS_WIFI_DIAGNOSTIC
 static constexpr char kDiagnosticWifiSsid[]    = "PDCN";
 static constexpr char kDiagnosticWifiPass[]    = "0000OOOO";
@@ -32,10 +28,9 @@ static ModemConfig defaultModemConfig(ModemId id) {
 #endif
   modem.name    = id == 0 ? "SIM1" : "SIM2";
 #ifdef SMS_BOARD_CH343
-  // 通用 CH343 板固定：物理针脚08/09的UART0实际为GPIO21/20 -> SIM1，
-  // UART1 GPIO0/1 -> SIM2。
-  modem.rxPin   = id == 0 ? 20 : 1;
-  modem.txPin   = id == 0 ? 21 : 0;
+  // CH343 板默认使用 UART0 -> SIM1、UART1 -> SIM2；SIM1 改用 GPIO10/3，避开板载 CH343 的 GPIO20/21。
+  modem.rxPin   = id == 0 ? 10 : 1;
+  modem.txPin   = id == 0 ? 3 : 0;
   modem.enPin   = -1;
 #else
   modem.rxPin   = id == 0 ? 4 : 9;
@@ -44,17 +39,6 @@ static ModemConfig defaultModemConfig(ModemId id) {
 #endif
   return modem;
 }
-
-#ifdef SMS_BOARD_CH343
-static void applyBoardModemPinMap() {
-  config.modems[0].rxPin = 20;
-  config.modems[0].txPin = 21;
-  config.modems[0].enPin = -1;
-  config.modems[1].rxPin = 1;
-  config.modems[1].txPin = 0;
-  config.modems[1].enPin = -1;
-}
-#endif
 
 #ifdef SMS_WIFI_DIAGNOSTIC
 static void applyWifiDiagnosticModemPolicy() {
@@ -80,22 +64,6 @@ static void seedWifiDiagnosticConfig(Preferences& prefs) {
   prefs.putString("wifi0pass", kDiagnosticWifiPass);
   prefs.putBool(kDiagnosticWifiSeeded, true);
   LOG("CFG", "%s，已配置默认WiFi: %s", seeded ? "诊断固件已修复空WiFi配置" : "诊断固件首次启动", kDiagnosticWifiSsid);
-}
-#endif
-
-#ifdef SMS_DEFAULT_DUAL
-static void seedDefaultDualModemConfig(Preferences& prefs) {
-  if (prefs.getBool(kDefaultDualSeeded, false)) {
-    return;
-  }
-
-  // 仅首次启动修复旧固件可能留下的单路开关；后续网页保存的启用状态不再被覆盖。
-  config.modems[0].enabled = true;
-  config.modems[1].enabled = true;
-  prefs.putBool("modem0En", true);
-  prefs.putBool("modem1En", true);
-  prefs.putBool(kDefaultDualSeeded, true);
-  LOG("CFG", "双路默认配置已启用 SIM1 与 SIM2");
 }
 #endif
 
@@ -130,16 +98,6 @@ void ConfigStore::load() {
     ch.retryOnFail = prefs.getBool((prefix + "retry").c_str(), false);
   }
 
-  // Migrate legacy httpUrl into channel 0
-  String oldHttpUrl = prefs.isKey("httpUrl") ? prefs.getString("httpUrl", "") : "";
-  if (oldHttpUrl.length() > 0 && !config.pushChannels[0].enabled) {
-    config.pushChannels[0].enabled = true;
-    config.pushChannels[0].url     = oldHttpUrl;
-    config.pushChannels[0].type    = prefs.getUChar("barkMode", 0) != 0 ? PUSH_TYPE_BARK : PUSH_TYPE_POST_JSON;
-    config.pushChannels[0].name    = "迁移通道";
-    LOG("CFG", "已迁移旧HTTP配置到推送通道1");
-  }
-
   config.simNotifyEnabled = prefs.isKey("simNotify") ? prefs.getBool("simNotify", false) : false;
   config.dataTraffic      = prefs.getBool("dataTraffic", false);
   config.logFileEnabled   = prefs.isKey("logFile") ? prefs.getBool("logFile", false) : false;
@@ -155,16 +113,7 @@ void ConfigStore::load() {
       config.wifiList[i].password = prefs.isKey(kp.c_str()) ? prefs.getString(kp.c_str(), "") : "";
     }
   } else {
-    String legacySsid = prefs.isKey("wifiSsid") ? prefs.getString("wifiSsid", "") : "";
-    String legacyPass = prefs.isKey("wifiPass") ? prefs.getString("wifiPass",  "") : "";
-    if (legacySsid.length() > 0) {
-      config.wifiList[0].ssid     = legacySsid;
-      config.wifiList[0].password = legacyPass;
-      config.wifiCount = 1;
-      LOG("CFG", "已迁移旧单WiFi配置到wifiList[0]");
-    } else {
-      config.wifiCount = 0;
-    }
+    config.wifiCount = 0;
   }
 
 #ifdef SMS_WIFI_DIAGNOSTIC
@@ -188,16 +137,14 @@ void ConfigStore::load() {
     config.modems[i].enPin   = prefs.getInt((prefix + "EnPin").c_str(), defaults.enPin);
   }
 #ifdef SMS_BOARD_CH343
-  // 不采信旧 NVS 或旧固件写入的 GPIO，防止恢复配置后重新使用错误引脚。
-  applyBoardModemPinMap();
+  // EN 已硬接 +5V；RX/TX 完全以 NVS 中的用户配置为准，不做旧配置迁移。
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    config.modems[i].enPin = -1;
+  }
 #endif
 #ifdef SMS_WIFI_DIAGNOSTIC
   applyWifiDiagnosticModemPolicy();
 #endif
-#ifdef SMS_DEFAULT_DUAL
-  seedDefaultDualModemConfig(prefs);
-#endif
-
   config.pushStrategy = (PushStrategy)(prefs.isKey("pushStrategy") ? prefs.getUChar("pushStrategy", 0) : 0);
   config.remark       = prefs.isKey("remark") ? prefs.getString("remark", "") : "";
 
@@ -222,9 +169,6 @@ void ConfigStore::save() {
   if (config.pushStrategy != PUSH_STRATEGY_BROADCAST && config.pushStrategy != PUSH_STRATEGY_FAILOVER) {
     config.pushStrategy = PUSH_STRATEGY_BROADCAST;
   }
-#ifdef SMS_BOARD_CH343
-  applyBoardModemPinMap();
-#endif
 #ifdef SMS_WIFI_DIAGNOSTIC
   applyWifiDiagnosticModemPolicy();
 #endif
@@ -277,9 +221,11 @@ void ConfigStore::save() {
     prefs.putString(("modem" + String(i) + "Name").c_str(), trimStr(modem.name).substring(0, 32));
     prefs.putInt(("modem" + String(i) + "Rx").c_str(), modem.rxPin);
     prefs.putInt(("modem" + String(i) + "Tx").c_str(), modem.txPin);
+#ifdef SMS_BOARD_CH343
+    modem.enPin = -1;
+#endif
     prefs.putInt(("modem" + String(i) + "EnPin").c_str(), modem.enPin);
   }
-
   prefs.putUChar("pushStrategy", (uint8_t)config.pushStrategy);
   prefs.putString("remark", trimStr(config.remark).substring(0, 64));
 
@@ -572,7 +518,9 @@ void ConfigStore::fromJson(JsonDocument& doc) {
     }
   }
 #ifdef SMS_BOARD_CH343
-  applyBoardModemPinMap();
+  for (ModemId i = 0; i < MODEM_COUNT; i++) {
+    config.modems[i].enPin = -1;
+  }
 #endif
 #ifdef SMS_WIFI_DIAGNOSTIC
   applyWifiDiagnosticModemPolicy();
