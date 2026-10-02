@@ -101,6 +101,7 @@ void ConfigStore::load() {
     ModemConfig defaults = defaultModemConfig(i);
     String prefix = "modem" + String(i);
     config.modems[i].enabled = prefs.getBool((prefix + "En").c_str(), defaults.enabled);
+    config.modems[i].httpPushEnabled = prefs.getBool((prefix + "HttpPush").c_str(), false);
     config.modems[i].name    = prefs.isKey((prefix + "Name").c_str())
                              ? prefs.getString((prefix + "Name").c_str(), defaults.name)
                              : defaults.name;
@@ -180,6 +181,7 @@ void ConfigStore::save() {
     ModemConfig& modem = config.modems[i];
     if (modem.name.length() == 0) modem.name = defaults.name;
     prefs.putBool(("modem" + String(i) + "En").c_str(), modem.enabled);
+    prefs.putBool(("modem" + String(i) + "HttpPush").c_str(), modem.httpPushEnabled);
     prefs.putString(("modem" + String(i) + "Name").c_str(), trimStr(modem.name).substring(0, 32));
     prefs.putInt(("modem" + String(i) + "Rx").c_str(), modem.rxPin);
     prefs.putInt(("modem" + String(i) + "Tx").c_str(), modem.txPin);
@@ -377,6 +379,7 @@ void ConfigStore::toJson(JsonDocument& doc) {
   for (ModemId i = 0; i < MODEM_COUNT; i++) {
     JsonObject modem = modems.add<JsonObject>();
     modem["enabled"] = config.modems[i].enabled;
+    modem["httpPushEnabled"] = config.modems[i].httpPushEnabled;
     modem["name"]    = config.modems[i].name;
     modem["rxPin"]   = config.modems[i].rxPin;
     modem["txPin"]   = config.modems[i].txPin;
@@ -467,6 +470,7 @@ void ConfigStore::fromJson(JsonDocument& doc) {
     for (JsonObject modem : doc["modems"].as<JsonArray>()) {
       if (i >= MODEM_COUNT) break;
       config.modems[i].enabled = modem["enabled"] | config.modems[i].enabled;
+      config.modems[i].httpPushEnabled = modem["httpPushEnabled"] | config.modems[i].httpPushEnabled;
       config.modems[i].name    = modem["name"]    | config.modems[i].name;
       config.modems[i].rxPin   = modem["rxPin"]   | config.modems[i].rxPin;
       config.modems[i].txPin   = modem["txPin"]   | config.modems[i].txPin;

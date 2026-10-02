@@ -58,6 +58,7 @@ void configController(AsyncWebServerRequest* request) {
     JsonObject modem = modems.add<JsonObject>();
     modem["id"]      = i;
     modem["enabled"] = config.modems[i].enabled;
+    modem["httpPushEnabled"] = config.modems[i].httpPushEnabled;
     modem["name"]    = config.modems[i].name;
     modem["uart"]    = i == 0 ? "UART1" : "UART0";
     modem["rxPin"]   = config.modems[i].rxPin;

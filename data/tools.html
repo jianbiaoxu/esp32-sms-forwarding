@@ -301,7 +301,9 @@
         <div class="section-title">🔌 ML307 双模组 UART 配置</div>
         <div class="hint">
           两路模组共用下方系统推送通道；启动时按 SIM1 → SIM2 逐路启动。GPIO9 是 ESP32-C3
-          启动相关引脚，按住 BOOT 或外部电平可能影响上电启动，请确认硬件连接。
+          启动相关引脚，按住 BOOT 或外部电平可能影响上电启动，请确认硬件连接。启用 4G HTTP
+          推送后，WiFi 未连接时按 SIM1 → SIM2 选择第一个可用模组，使用下方系统共用推送通道
+          发送；默认关闭，数据连接按需激活。
         </div>
         <div id="modemCards"></div>
         <button type="button" onclick="saveModemConfig()" style="background:#1976d2;width:auto;">
@@ -447,6 +449,10 @@
             <tr>
               <td>最新版本</td>
               <td id="otaLatestVer">检查中...</td>
+            </tr>
+            <tr>
+              <td>可用 OTA 分区</td>
+              <td id="otaPartitionSize">获取中...</td>
             </tr>
           </table>
         </div>
@@ -933,6 +939,11 @@
               "<tr><td>CPU 频率</td><td>" +
               d.cpuFreqMHz +
               " MHz</td></tr>" +
+              "<tr><td>SOC 温度</td><td>" +
+              (d.temperatureC === undefined
+                ? "不支持"
+                : Number(d.temperatureC).toFixed(1) + " °C") +
+              "</td></tr>" +
               "<tr><td>芯片 ID</td><td>" +
               d.chipId +
               "</td></tr>" +
@@ -971,6 +982,7 @@
           var modem = modems[i] || {
             id: i,
             enabled: i === 0,
+            httpPushEnabled: false,
             name: "SIM" + (i + 1),
             uart: i === 0 ? "UART1" : "UART0",
             rxPin: i === 0 ? 4 : 9,
@@ -986,6 +998,7 @@
                 '<label style="margin:0;"><input type="checkbox" id="modemEnabled' + id + '" ' + (modem.enabled ? "checked" : "") + '> 启用</label>' +
               '</div>' +
               '<div class="form-group"><label>名称</label><input id="modemName' + id + '" value="' + escapeHtml(modem.name || ("SIM" + (id + 1))) + '"></div>' +
+              '<div class="form-group"><label style="display:inline-flex;align-items:center;gap:6px;"><input type="checkbox" id="modemHttpPush' + id + '" ' + (modem.httpPushEnabled ? "checked" : "") + '> 启用4G HTTP推送（WiFi断开时）</label></div>' +
               '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">' +
                 '<div class="form-group"><label>RX GPIO</label><input type="number" id="modemRx' + id + '" value="' + modem.rxPin + '"></div>' +
                 '<div class="form-group"><label>TX GPIO</label><input type="number" id="modemTx' + id + '" value="' + modem.txPin + '"></div>' +
@@ -1017,6 +1030,7 @@
           modems.push({
             id: i,
             enabled: document.getElementById("modemEnabled" + i).checked,
+            httpPushEnabled: document.getElementById("modemHttpPush" + i).checked,
             name: document.getElementById("modemName" + i).value.trim(),
             rxPin: parseInt(document.getElementById("modemRx" + i).value, 10),
             txPin: parseInt(document.getElementById("modemTx" + i).value, 10),
@@ -1381,6 +1395,7 @@
       var otaInUpgrade = false;
       var otaCurrentVersion = "";
       var otaLatestVersion = "";
+      var otaMaxBytes = 0;
 
       function otaStateLabel(state) {
         var map = {
@@ -1401,6 +1416,18 @@
         var latestEl = document.getElementById("otaLatestVer");
         var onlineBtn = document.getElementById("otaOnlineBtn");
         var upToDate = document.getElementById("otaUpToDate");
+        var onlineArea = document.getElementById("otaOnlineArea");
+        var partitionEl = document.getElementById("otaPartitionSize");
+
+        if (d.otaPartitionSize > 0) {
+          otaMaxBytes = Number(d.otaPartitionSize);
+          if (partitionEl) partitionEl.textContent = fmt(otaMaxBytes);
+        }
+
+        if (d.otaCheckEnabled === false) {
+          latestEl.textContent = "已关闭（自定义固件）";
+          onlineArea.style.display = "none";
+        }
 
         if (d.currentVersion) {
           curVerEl.textContent = d.currentVersion;
@@ -1492,6 +1519,7 @@
           })
           .then(function (d) {
             renderOtaStatus(d);
+            if (d.otaCheckEnabled === false) return;
             // 只要版本号还没拿到就启动轮询（后端任务异步启动，首次响应可能仍是 idle+空版本）
             if (!d.latestVersion) {
               startOtaPolling();
@@ -1583,11 +1611,13 @@
         }
 
         var file = fileInput.files[0];
-        if (file.size > 1.5 * 1024 * 1024) {
+        if (otaMaxBytes > 0 && file.size > otaMaxBytes) {
           progress.className = "result-box result-error";
           progress.style.display = "block";
           progress.textContent =
-            "❌ 文件过大（单个 OTA 分区最大约 1.25MB），请确认选择了正确的固件文件";
+            "❌ 文件过大（当前 OTA 分区最大 " +
+            fmt(otaMaxBytes) +
+            "），请选择 firmware.bin，不要选择 firmware.factory.bin";
           return;
         }
 

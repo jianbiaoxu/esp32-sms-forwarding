@@ -63,11 +63,16 @@ OtaStatusPayload Ota::status() {
     p.message        = g_message;
     p.currentVersion = g_currentVer;
     p.latestVersion  = g_latestVer;
+    const esp_partition_t* nextPart = g_otaPart != nullptr
+        ? g_otaPart
+        : esp_ota_get_next_update_partition(nullptr);
+    p.otaPartitionSize = nextPart != nullptr ? nextPart->size : 0;
     return p;
 }
 
 // ── fetchLatestTag — 向 GitHub 查询最新 release tag──
 // 成功返回 tag 字符串，失败返回空串
+#ifndef SMS_DISABLE_OTA_CHECK
 static String fetchLatestTag(const String& url) {
     String latestTag = "";
     auto session = std::unique_ptr<HttpSession>(HttpSession::request(url));
@@ -104,6 +109,7 @@ static void checkVersionTask(void* /*param*/) {
     g_message    = "";
     vTaskDelete(nullptr);
 }
+#endif
 // ── otaTaskAbort — 失败后延时清理并终止任务（仅限 FreeRTOS 任务内调用）──
 [[noreturn]] static void otaTaskAbort(const String& userMsg) {
     g_state      = OtaState::FAILED;
@@ -361,6 +367,9 @@ static void onlineUpgradeTask(void* param) {
 
 // ── Ota::startVersionCheck ──────────────────────────────────────────
 void Ota::startVersionCheck() {
+#ifdef SMS_DISABLE_OTA_CHECK
+    return;
+#else
     if (g_inProgress) return;
     unsigned long now = millis();
     if (g_lastCheckMs != 0 && now - g_lastCheckMs < OTA_CHECK_DEBOUNCE_MS) return;
@@ -369,6 +378,7 @@ void Ota::startVersionCheck() {
     g_latestVer   = "";
     g_state       = OtaState::CHECKING;  // 同步设置，确保首次 getStatus() 即可见
     xTaskCreate(checkVersionTask, "ota_check", OTA_TASK_STACK_SIZE, nullptr, OTA_TASK_PRIORITY, nullptr);
+#endif
 }
 
 // ── Ota::startOnlineUpgrade ─────────────────────────────────────────
