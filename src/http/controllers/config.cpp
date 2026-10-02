@@ -25,20 +25,6 @@ void configController(AsyncWebServerRequest* request) {
 
   root["pushStrategy"] = (int)config.pushStrategy;
   root["pushCount"]    = config.pushCount;
-#ifdef SMS_BOARD_CH343
-  root["modemPinConfigFixed"] = false;
-  root["enControl"]            = false;
-  root["fixedUartMapping"]     = "UART0->SIM1, UART1->SIM2";
-#else
-  root["modemPinConfigFixed"] = false;
-  root["enControl"]            = true;
-#endif
-#ifdef SMS_WIFI_DIAGNOSTIC
-  root["diagnosticMode"]       = true;
-  root["wifiTxPowerApplied"]   = false;
-  root["debugTransport"]       = "CH343 UART0";
-  root["diagnosticModem"]      = "SIM2 / UART1";
-#endif
 
   root["rbEnabled"]   = rebootSchedule.enabled;
   root["rbMode"]      = (int)rebootSchedule.mode;
@@ -72,13 +58,8 @@ void configController(AsyncWebServerRequest* request) {
     JsonObject modem = modems.add<JsonObject>();
     modem["id"]      = i;
     modem["enabled"] = config.modems[i].enabled;
-    modem["httpPushEnabled"] = config.modems[i].httpPushEnabled;
     modem["name"]    = config.modems[i].name;
-#ifdef SMS_BOARD_CH343
-    modem["uart"]    = i == 0 ? "UART0" : "UART1";
-#else
     modem["uart"]    = i == 0 ? "UART1" : "UART0";
-#endif
     modem["rxPin"]   = config.modems[i].rxPin;
     modem["txPin"]   = config.modems[i].txPin;
     modem["enPin"]   = config.modems[i].enPin;
@@ -146,6 +127,12 @@ void configImportController(AsyncWebServerRequest* request, uint8_t* data,
       config.webPass          = s["webPass"]       | config.webPass;
       config.simNotifyEnabled = s["simNotify"]     | config.simNotifyEnabled;
       config.dataTraffic       = s["dataTraffic"]   | config.dataTraffic;
+      // 旧格式：wifiSsid/wifiPass → wifiList[0] 迁移
+      if (s["wifiSsid"].is<const char*>()) {
+        config.wifiList[0].ssid     = s["wifiSsid"].as<String>();
+        config.wifiList[0].password = s["wifiPass"] | String("");
+        config.wifiCount = 1;
+      }
       config.pushStrategy     = (PushStrategy)(s["pushStrategy"] | (int)config.pushStrategy);
       for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
         String prefix = "push" + String(i);
@@ -183,6 +170,7 @@ void configImportController(AsyncWebServerRequest* request, uint8_t* data,
 
   // 新格式：至少一个可识别节名
   bool hasRecognized = doc["general"].is<JsonObject>()
+                    || doc["wifi"].is<JsonObject>()
                     || doc["wifiList"].is<JsonArray>()
                     || doc["modems"].is<JsonArray>()
                     || doc["pushChannels"].is<JsonArray>()
@@ -191,6 +179,18 @@ void configImportController(AsyncWebServerRequest* request, uint8_t* data,
   if (!hasRecognized) {
     JsonResp::err(request, 400, "配置格式不兼容，未找到可识别的配置节");
     return;
+  }
+
+  // 向后兼容：旧 wifi 单对象 → wifiList（转换后交给 ConfigStore::fromJson 统一处理）
+  if (!doc["wifiList"].is<JsonArray>() && doc["wifi"].is<JsonObject>()) {
+    JsonObject w = doc["wifi"].as<JsonObject>();
+    String ssid  = w["ssid"] | String("");
+    if (ssid.length() > 0) {
+      JsonArray wArr = doc["wifiList"].to<JsonArray>();
+      JsonObject we  = wArr.add<JsonObject>();
+      we["ssid"] = ssid;
+      we["pass"] = w["pass"] | String("");
+    }
   }
 
   // 数组长度校验（超出限制立即返回 4xx，不调用 ConfigStore::fromJson）

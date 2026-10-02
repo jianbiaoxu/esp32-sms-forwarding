@@ -104,27 +104,6 @@ static MessageContext buildMsgContext(const String& sender, const String& messag
   return ctx;
 }
 
-static bool isHttpPushType(PushType type) {
-  return type >= PUSH_TYPE_POST_JSON && type <= PUSH_TYPE_WECHAT_WORK;
-}
-
-// WiFi 不可用时固定按配置顺序选择第一个“模组已启用 + 4G HTTP 推送已启用”的模组。
-// 一条推送链只使用这个模组，不在中途切换到第二路，避免同一消息重复发送。
-static ModemId firstCellularHttpModem() {
-  for (ModemId i = 0; i < MODEM_COUNT; i++) {
-    if (config.modems[i].enabled && config.modems[i].httpPushEnabled) return i;
-  }
-  return MODEM_COUNT;
-}
-
-bool Push::isCellularHttpFallback(int channelIdx) {
-  if (channelIdx < 0 || channelIdx >= config.pushCount) return false;
-  if (WiFi.status() == WL_CONNECTED) return false;
-  const PushChannel& ch = config.pushChannels[channelIdx];
-  return ConfigStore::isPushChannelValid(ch) && isHttpPushType(ch.type) &&
-         firstCellularHttpModem() < MODEM_COUNT;
-}
-
 // 单通道推送：含跳过判断、构建消息上下文，供重试队列调用
 bool Push::executeChannel(int channelIdx, const String& sender, const String& message, const String& timestamp, const MsgTypeInfo& msgType, ModemId modemId) {
   if (channelIdx < 0 || channelIdx >= config.pushCount) return false;
@@ -132,24 +111,13 @@ bool Push::executeChannel(int channelIdx, const String& sender, const String& me
   if (!ConfigStore::isPushChannelValid(ch)) return false;
 
   bool wifiOk = (WiFi.status() == WL_CONNECTED);
-  bool cellularHttp = isHttpPushType(ch.type) && !wifiOk;
-  ModemId cellularModem = cellularHttp ? firstCellularHttpModem() : MODEM_COUNT;
-  if (cellularHttp && cellularModem >= MODEM_COUNT) return false;
+  if (ch.type >= PUSH_TYPE_POST_JSON && ch.type <= PUSH_TYPE_WECHAT_WORK && !wifiOk) return false;
   if (ch.type == PUSH_TYPE_SMS && msgType.type == MSG_TYPE_SIM) return false;
 
   MessageContext ctx = buildMsgContext(sender, message, timestamp, msgType.toString(), modemId);
   ctx.channelName = ch.name;
   ctx.channelType    = pushTypeLabel(ch.type);
   String renderedBody = ch.customBody.length() > 0 ? MsgContext::render(ch.customBody, ctx) : "";
-  if (cellularHttp) {
-    PushChannel rendered = ch;
-    rendered.key1 = MsgContext::render(ch.key1, ctx);
-    rendered.key2 = MsgContext::render(ch.key2, ctx);
-    PushBody body = renderedBody.length() > 0
-                  ? PushBody{PUSH_BODY_CUSTOM, sanitizeText(renderedBody)}
-                  : PushBody{PUSH_BODY_DEFAULT, sanitizeText(message)};
-    return PushChannels::sendCellularHttp(rendered, sender, body, timestamp, cellularModem);
-  }
   return _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp, modemId);
 }
 
@@ -174,7 +142,6 @@ void Push::executeChain(const String& sender, const String& message, const Strin
 
   bool wifiOk = (WiFi.status() == WL_CONNECTED);
   bool anyAction = false;
-  ModemId cellularModem = wifiOk ? MODEM_COUNT : firstCellularHttpModem();
 
   // 故障转移模式：收集失败通道，仅在整链全部失败时才入队重试，
   // 防止某后续通道成功后仍触发已入队的前序通道二次推送。
@@ -188,9 +155,9 @@ void Push::executeChain(const String& sender, const String& message, const Strin
     const PushChannel& ch = config.pushChannels[i];
     if (!ConfigStore::isPushChannelValid(ch)) continue;
 
-    bool cellularHttp = isHttpPushType(ch.type) && !wifiOk;
-    if (cellularHttp && cellularModem >= MODEM_COUNT) {
-      LOG("PUSH", "WiFi未连接且未配置可用的 4G HTTP 模组，跳过HTTP通道: %s", ch.name.c_str());
+    // HTTP 类通道（type 1–11）在 WiFi 未连接时跳过
+    if (ch.type >= PUSH_TYPE_POST_JSON && ch.type <= PUSH_TYPE_WECHAT_WORK && !wifiOk) {
+      LOG("PUSH", "WiFi未连接，跳过HTTP通道: %s", ch.name.c_str());
       continue;
     }
 
@@ -208,18 +175,7 @@ void Push::executeChain(const String& sender, const String& message, const Strin
     ctx.channelType    = pushTypeLabel(ch.type);
     String renderedBody = ch.customBody.length() > 0 ? MsgContext::render(ch.customBody, ctx) : "";
 
-    bool ok;
-    if (cellularHttp) {
-      PushChannel rendered = ch;
-      rendered.key1 = MsgContext::render(ch.key1, ctx);
-      rendered.key2 = MsgContext::render(ch.key2, ctx);
-      PushBody body = renderedBody.length() > 0
-                    ? PushBody{PUSH_BODY_CUSTOM, sanitizeText(renderedBody)}
-                    : PushBody{PUSH_BODY_DEFAULT, sanitizeText(message)};
-      ok = PushChannels::sendCellularHttp(rendered, sender, body, timestamp, cellularModem);
-    } else {
-      ok = _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp, modemId);
-    }
+    bool ok = _sendOneChannel(ch, ctx, sender, message, renderedBody, timestamp, modemId);
 
     if (config.pushStrategy == PUSH_STRATEGY_FAILOVER) {
       if (ok) {
@@ -229,13 +185,13 @@ void Push::executeChain(const String& sender, const String& message, const Strin
       }
       LOG("PUSH", "故障转移模式：通道 %s 失败，继续下一个", name.c_str());
       // 暂存待重试索引，等整链确认全部失败后再统一入队
-      if (ch.retryOnFail && !cellularHttp && failoverRetryCount < MAX_PUSH_CHANNELS) {
+      if (ch.retryOnFail && failoverRetryCount < MAX_PUSH_CHANNELS) {
         failoverRetry[failoverRetryCount++] = i;
       }
     } else {
       // 广播模式：继续所有通道
       delay(100);
-      if (!ok && ch.retryOnFail && !cellularHttp) {
+      if (!ok && ch.retryOnFail) {
         PushRetry::enqueue(i, sender, message, timestamp, msgType, RetryReason::SEND_FAILED, modemId);
         LOG("PUSH", "[Retry] 通道 %s 失败，已加入重试队列", name.c_str());
       }

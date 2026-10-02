@@ -163,19 +163,6 @@ esptool --chip esp32c3 --baud 460800 write_flash 0x3D0000 littlefs.bin
 - [makergo_esp32c3_supermini.json](boards/makergo_esp32c3_supermini.json)
 - [pins_arduino.h](custom_variants/super_mini_esp32c3/pins_arduino.h)
 
-## 通用 ESP32-C3（CH343 USB 转串口）
-
-工程另提供 `esp32_c3_ch343` 构建目标，适用于 4MB Flash、外置 CH343 USB 转串口的通用 ESP32-C3 开发板。该目标使用官方 `esp32-c3-devkitm-1` 芯片参数和独立 variant，不复用 SuperMini 的板卡定义：
-
-```bash
-pio run -e esp32_c3_ch343
-pio run -e esp32_c3_ch343 -t buildfs
-```
-
-该目标的 UART 归属为 UART0 → SIM1、UART1（TX GPIO0、RX GPIO1）→ SIM2；默认 SIM1 为 RX GPIO10、TX GPIO3，以避开带 CH343 经典版的 UART0 GPIO20/21，工具箱可动态修改两路 RX/TX GPIO，保存后重启生效。ML307 的 EN 已外部短接到 +5V，固件不会配置或切换 EN GPIO。CH343 主要用于烧录，运行日志优先从 Web 工具箱的日志页面查看。首次烧录请使用该目标生成的全量 factory 镜像并写入 `0x0`，不要混用 SuperMini 目标生成的镜像。
-
-另提供 esp32_c3_ch343_wifi_diag 诊断目标：保持 WiFi 芯片默认发射功率，释放 UART0 给 CH343 输出日志，固定禁用 SIM1，仅启用 UART1/GPIO0/GPIO1 上的 SIM2，用于先验证 AP/STA WiFi 和日志链路。该目标不是双模组正式固件。
-
 ## 软件组成
 
 **ESP32-C3（C++17，PlatformIO）**：

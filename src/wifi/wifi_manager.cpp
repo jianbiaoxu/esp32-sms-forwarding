@@ -35,16 +35,12 @@ static wifi_power_t configuredWifiTxPower() {
 }
 
 static void applyWifiTxPower() {
-#ifdef SMS_WIFI_DIAGNOSTIC
-  LOG("WIFI", "WiFi诊断模式：保持芯片默认发射功率，不调用setTxPower");
-#else
   wifi_power_t power = configuredWifiTxPower();
   if (!WiFi.setTxPower(power)) {
     LOG("WIFI", "WiFi发射功率设置失败，配置值 %.1f dBm", config.wifiTxPower);
   } else {
     LOG("WIFI", "WiFi发射功率已设置为 %.1f dBm", config.wifiTxPower);
   }
-#endif
 }
 
 // 轮询重连状态机

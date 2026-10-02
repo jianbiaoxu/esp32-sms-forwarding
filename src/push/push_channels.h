@@ -37,7 +37,4 @@ public:
   static bool sendWechatWork(const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp);
   static bool sendSmsPush   (const PushChannel& ch, const String& sender, const PushBody& message, const String& timestamp,
                              ModemId modemId = MODEM_PRIMARY);
-  // 通过指定 ML307 的 4G HTTP 客户端发送与 WiFi 共用的 HTTP 推送通道。
-  static bool sendCellularHttp(const PushChannel& ch, const String& sender, const PushBody& message,
-                               const String& timestamp, ModemId modemId);
 };

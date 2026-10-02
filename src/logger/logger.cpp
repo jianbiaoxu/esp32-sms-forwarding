@@ -52,13 +52,8 @@ static void rotateIfNeeded(size_t pendingBytes) {
 
 // 串口输出
 static void writeToSerial(const char* line) {
-#ifdef SMS_CH343_LOG_UART
-  Serial0.print(line);
-  Serial0.print("\r\n");
-#else
   Serial.print(line);
   Serial.print("\r\n");
-#endif
 }
 
 // 去重检查并更新状态，返回 true 表示是重复条目

@@ -8,12 +8,6 @@
 static constexpr char kNvsSmsConfig[] = "sms_config";
 static constexpr char kNvsRebootCfg[] = "reboot_cfg";
 
-#ifdef SMS_WIFI_DIAGNOSTIC
-static constexpr char kDiagnosticWifiSsid[]    = "PDCN";
-static constexpr char kDiagnosticWifiPass[]    = "0000OOOO";
-static constexpr char kDiagnosticWifiSeeded[]  = "diagWifiSeeded";
-#endif
-
 static String trimStr(const String& s) {
   String r = s;
   r.trim();
@@ -23,49 +17,12 @@ static String trimStr(const String& s) {
 static ModemConfig defaultModemConfig(ModemId id) {
   ModemConfig modem{};
   modem.enabled = true;
-#ifdef SMS_WIFI_DIAGNOSTIC
-  modem.enabled = id == 1;
-#endif
   modem.name    = id == 0 ? "SIM1" : "SIM2";
-#ifdef SMS_BOARD_CH343
-  // CH343 板默认使用 UART0 -> SIM1、UART1 -> SIM2；SIM1 改用 GPIO10/3，避开板载 CH343 的 GPIO20/21。
-  modem.rxPin   = id == 0 ? 10 : 1;
-  modem.txPin   = id == 0 ? 3 : 0;
-  modem.enPin   = -1;
-#else
   modem.rxPin   = id == 0 ? 4 : 9;
   modem.txPin   = id == 0 ? 3 : 10;
   modem.enPin   = id == 0 ? 5 : 6;
-#endif
   return modem;
 }
-
-#ifdef SMS_WIFI_DIAGNOSTIC
-static void applyWifiDiagnosticModemPolicy() {
-  // UART0 要留给 CH343 日志，只使用 UART1 上的 SIM2。
-  config.modems[0].enabled = false;
-  config.modems[1].enabled = true;
-  config.atBridgeEnabled   = false;
-}
-
-static void seedWifiDiagnosticConfig(Preferences& prefs) {
-  bool seeded  = prefs.getBool(kDiagnosticWifiSeeded, false);
-  bool hasWifi = config.wifiCount > 0 && config.wifiList[0].ssid.length() > 0;
-  if (seeded && hasWifi) {
-    return;
-  }
-
-  // 首次启动自动准备测试网络，并持久化到NVS；后续仍以网页保存的配置为准。
-  config.wifiCount            = 1;
-  config.wifiList[0].ssid     = kDiagnosticWifiSsid;
-  config.wifiList[0].password = kDiagnosticWifiPass;
-  prefs.putUChar("wifiCount", 1);
-  prefs.putString("wifi0ssid", kDiagnosticWifiSsid);
-  prefs.putString("wifi0pass", kDiagnosticWifiPass);
-  prefs.putBool(kDiagnosticWifiSeeded, true);
-  LOG("CFG", "%s，已配置默认WiFi: %s", seeded ? "诊断固件已修复空WiFi配置" : "诊断固件首次启动", kDiagnosticWifiSsid);
-}
-#endif
 
 Config config;
 RebootSchedule rebootSchedule;
@@ -98,6 +55,16 @@ void ConfigStore::load() {
     ch.retryOnFail = prefs.getBool((prefix + "retry").c_str(), false);
   }
 
+  // Migrate legacy httpUrl into channel 0
+  String oldHttpUrl = prefs.isKey("httpUrl") ? prefs.getString("httpUrl", "") : "";
+  if (oldHttpUrl.length() > 0 && !config.pushChannels[0].enabled) {
+    config.pushChannels[0].enabled = true;
+    config.pushChannels[0].url     = oldHttpUrl;
+    config.pushChannels[0].type    = prefs.getUChar("barkMode", 0) != 0 ? PUSH_TYPE_BARK : PUSH_TYPE_POST_JSON;
+    config.pushChannels[0].name    = "迁移通道";
+    LOG("CFG", "已迁移旧HTTP配置到推送通道1");
+  }
+
   config.simNotifyEnabled = prefs.isKey("simNotify") ? prefs.getBool("simNotify", false) : false;
   config.dataTraffic      = prefs.getBool("dataTraffic", false);
   config.logFileEnabled   = prefs.isKey("logFile") ? prefs.getBool("logFile", false) : false;
@@ -113,12 +80,17 @@ void ConfigStore::load() {
       config.wifiList[i].password = prefs.isKey(kp.c_str()) ? prefs.getString(kp.c_str(), "") : "";
     }
   } else {
-    config.wifiCount = 0;
+    String legacySsid = prefs.isKey("wifiSsid") ? prefs.getString("wifiSsid", "") : "";
+    String legacyPass = prefs.isKey("wifiPass") ? prefs.getString("wifiPass",  "") : "";
+    if (legacySsid.length() > 0) {
+      config.wifiList[0].ssid     = legacySsid;
+      config.wifiList[0].password = legacyPass;
+      config.wifiCount = 1;
+      LOG("CFG", "已迁移旧单WiFi配置到wifiList[0]");
+    } else {
+      config.wifiCount = 0;
+    }
   }
-
-#ifdef SMS_WIFI_DIAGNOSTIC
-  seedWifiDiagnosticConfig(prefs);
-#endif
 
   config.wifiTxPower = prefs.isKey("wifiTxPower") ? prefs.getFloat("wifiTxPower", 8.5f) : 8.5f;
   if (config.wifiTxPower < -1.0f || config.wifiTxPower > 19.5f) {
@@ -129,7 +101,6 @@ void ConfigStore::load() {
     ModemConfig defaults = defaultModemConfig(i);
     String prefix = "modem" + String(i);
     config.modems[i].enabled = prefs.getBool((prefix + "En").c_str(), defaults.enabled);
-    config.modems[i].httpPushEnabled = prefs.getBool((prefix + "HttpPush").c_str(), false);
     config.modems[i].name    = prefs.isKey((prefix + "Name").c_str())
                              ? prefs.getString((prefix + "Name").c_str(), defaults.name)
                              : defaults.name;
@@ -137,15 +108,7 @@ void ConfigStore::load() {
     config.modems[i].txPin   = prefs.getInt((prefix + "Tx").c_str(), defaults.txPin);
     config.modems[i].enPin   = prefs.getInt((prefix + "EnPin").c_str(), defaults.enPin);
   }
-#ifdef SMS_BOARD_CH343
-  // EN 已硬接 +5V；RX/TX 完全以 NVS 中的用户配置为准，不做旧配置迁移。
-  for (ModemId i = 0; i < MODEM_COUNT; i++) {
-    config.modems[i].enPin = -1;
-  }
-#endif
-#ifdef SMS_WIFI_DIAGNOSTIC
-  applyWifiDiagnosticModemPolicy();
-#endif
+
   config.pushStrategy = (PushStrategy)(prefs.isKey("pushStrategy") ? prefs.getUChar("pushStrategy", 0) : 0);
   config.remark       = prefs.isKey("remark") ? prefs.getString("remark", "") : "";
 
@@ -170,9 +133,7 @@ void ConfigStore::save() {
   if (config.pushStrategy != PUSH_STRATEGY_BROADCAST && config.pushStrategy != PUSH_STRATEGY_FAILOVER) {
     config.pushStrategy = PUSH_STRATEGY_BROADCAST;
   }
-#ifdef SMS_WIFI_DIAGNOSTIC
-  applyWifiDiagnosticModemPolicy();
-#endif
+
   NvsScope p(kNvsSmsConfig, false);
   if (!p.ok()) {
     return;
@@ -219,15 +180,12 @@ void ConfigStore::save() {
     ModemConfig& modem = config.modems[i];
     if (modem.name.length() == 0) modem.name = defaults.name;
     prefs.putBool(("modem" + String(i) + "En").c_str(), modem.enabled);
-    prefs.putBool(("modem" + String(i) + "HttpPush").c_str(), modem.httpPushEnabled);
     prefs.putString(("modem" + String(i) + "Name").c_str(), trimStr(modem.name).substring(0, 32));
     prefs.putInt(("modem" + String(i) + "Rx").c_str(), modem.rxPin);
     prefs.putInt(("modem" + String(i) + "Tx").c_str(), modem.txPin);
-#ifdef SMS_BOARD_CH343
-    modem.enPin = -1;
-#endif
     prefs.putInt(("modem" + String(i) + "EnPin").c_str(), modem.enPin);
   }
+
   prefs.putUChar("pushStrategy", (uint8_t)config.pushStrategy);
   prefs.putString("remark", trimStr(config.remark).substring(0, 64));
 
@@ -327,15 +285,12 @@ void ConfigStore::reset() {
     config.pushChannels[i].type = PUSH_TYPE_POST_JSON;
   }
   config.wifiCount = 1;
-#ifdef SMS_WIFI_DIAGNOSTIC
-  config.wifiList[0] = WifiEntry{kDiagnosticWifiSsid, kDiagnosticWifiPass};
-#else
   config.wifiList[0] = WifiEntry{"", ""};
-#endif
   config.wifiTxPower = 8.5f;
   for (ModemId i = 0; i < MODEM_COUNT; i++) {
     config.modems[i] = defaultModemConfig(i);
   }
+
   rebootSchedule = RebootSchedule{};
   rebootSchedule.hour      = 3;
   rebootSchedule.intervalH = 24;
@@ -422,7 +377,6 @@ void ConfigStore::toJson(JsonDocument& doc) {
   for (ModemId i = 0; i < MODEM_COUNT; i++) {
     JsonObject modem = modems.add<JsonObject>();
     modem["enabled"] = config.modems[i].enabled;
-    modem["httpPushEnabled"] = config.modems[i].httpPushEnabled;
     modem["name"]    = config.modems[i].name;
     modem["rxPin"]   = config.modems[i].rxPin;
     modem["txPin"]   = config.modems[i].txPin;
@@ -513,7 +467,6 @@ void ConfigStore::fromJson(JsonDocument& doc) {
     for (JsonObject modem : doc["modems"].as<JsonArray>()) {
       if (i >= MODEM_COUNT) break;
       config.modems[i].enabled = modem["enabled"] | config.modems[i].enabled;
-      config.modems[i].httpPushEnabled = modem["httpPushEnabled"] | config.modems[i].httpPushEnabled;
       config.modems[i].name    = modem["name"]    | config.modems[i].name;
       config.modems[i].rxPin   = modem["rxPin"]   | config.modems[i].rxPin;
       config.modems[i].txPin   = modem["txPin"]   | config.modems[i].txPin;
@@ -521,14 +474,7 @@ void ConfigStore::fromJson(JsonDocument& doc) {
       i++;
     }
   }
-#ifdef SMS_BOARD_CH343
-  for (ModemId i = 0; i < MODEM_COUNT; i++) {
-    config.modems[i].enPin = -1;
-  }
-#endif
-#ifdef SMS_WIFI_DIAGNOSTIC
-  applyWifiDiagnosticModemPolicy();
-#endif
+
   if (doc["reboot"].is<JsonObject>()) {
     JsonObject r = doc["reboot"].as<JsonObject>();
     rebootSchedule.enabled   = r["enabled"]   | rebootSchedule.enabled;
